@@ -418,3 +418,134 @@ with overview_tab:
 
                 c3, c4 = st.columns(2)
                 with c3:
+                    st.download_button(
+                        "⬇️ Download totals-by-plant (CSV)",
+                        data=df_to_csv_bytes(by_plant),
+                        file_name="totals_by_plant_latest_period.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+                with c4:
+                    st.download_button(
+                        "⬇️ Download totals-by-plant (Excel)",
+                        data=df_to_excel_bytes(by_plant, "TotalsByPlant_Latest"),
+                        file_name="totals_by_plant_latest_period.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+
+# ===========================================================
+# METRIC TABS — Shared renderer
+#   - Highlight high 'Days Since Zero'
+#   - Download buttons for highlighted summary & selected history
+# ===========================================================
+def render_metric_tab(container, df_filt, qty_col, title, key_suffix):
+    with container:
+        st.subheader(f"📌 {title} — Latest Period Overview")
+
+        summary_df = build_summary(df_filt, qty_col)
+        if summary_df.empty:
+            st.warning("No data available for the selected filters / metric.")
+            return
+
+        # === Highlighted summary (Styler) ===
+        st.caption(
+            f"Color legend — {warn_threshold}+ days: light yellow, "
+            f"{high_threshold}+ days: light orange, "
+            f"{critical_threshold}+ days: light red."
+        )
+        styled = style_days_since(summary_df, warn_threshold, high_threshold, critical_threshold)
+        st.dataframe(styled, use_container_width=True, height=500)
+
+        # Download highlighted summary
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.download_button(
+                "⬇️ Download summary (CSV)",
+                data=df_to_csv_bytes(summary_df),
+                file_name=f"{qty_col.lower()}_summary.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key=f"dl_csv_summary_{key_suffix}",
+            )
+        with col_b:
+            st.download_button(
+                "⬇️ Download summary (Excel)",
+                data=df_to_excel_bytes(summary_df, f"{qty_col}_Summary"),
+                file_name=f"{qty_col.lower()}_summary.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key=f"dl_xlsx_summary_{key_suffix}",
+            )
+
+        st.markdown("---")
+        st.subheader("🔎 Select a material to view full history")
+
+        # Selection widget
+        summary_df["_option"] = (
+            summary_df["SapCode"].astype(str)
+            + " | " + summary_df["Warehouse"].astype(str)
+            + " | Qty: " + summary_df["Quantity"].astype(int).astype(str)
+            + " | Days: " + summary_df["Days Since Zero"].astype(int).astype(str)
+        )
+        pick = st.selectbox(
+            "Material / Warehouse",
+            options=summary_df["_option"].tolist(),
+            index=0,
+            key=f"select_{key_suffix}",
+        )
+        sel_row = summary_df.loc[summary_df["_option"] == pick].iloc[0]
+        mat = sel_row["SapCode"]
+        wh  = sel_row["Warehouse"]
+
+        history = (
+            df_filt[(df_filt["SapCode"] == mat) &
+                    (df_filt["Warehouse"] == wh)]
+            .sort_values("Period")
+        )
+
+        st.write("### 📄 Full History Table")
+        st.dataframe(history, use_container_width=True, height=450)
+
+        # Download history
+        col_c, col_d = st.columns(2)
+        with col_c:
+            st.download_button(
+                "⬇️ Download history (CSV)",
+                data=df_to_csv_bytes(history),
+                file_name=f"{qty_col.lower()}_{mat}_{wh}_history.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key=f"dl_csv_hist_{key_suffix}",
+            )
+        with col_d:
+            st.download_button(
+                "⬇️ Download history (Excel)",
+                data=df_to_excel_bytes(history, f"{qty_col}_History"),
+                file_name=f"{qty_col.lower()}_{mat}_{wh}_history.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key=f"dl_xlsx_hist_{key_suffix}",
+            )
+
+        st.write("### 📊 Quantity Over Time")
+        if qty_col in history.columns and "Period" in history.columns:
+            chart = (
+                alt.Chart(history)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("Period:T", title="Period"),
+                    y=alt.Y(f"{qty_col}:Q", title="Quantity"),
+                    tooltip=["Period", qty_col],
+                )
+                .properties(height=450, width=1400)
+            )
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.info(f"Column '{qty_col}' or 'Period' not found in history for this selection.")
+
+# Render each metric tab
+render_metric_tab(qi_tab, filtered, "QualityInspectionQty", "Quality Inspection Qty", "qi")
+render_metric_tab(bs_tab, filtered, "BlockedStockQty", "Blocked Stock Qty", "bs")
+render_metric_tab(rs_tab, filtered, "ReturnStockQty", "Return Stock Qty", "rs")
+render_metric_tab(oa_tab, filtered, "OveragedTireQty", "Overaged Inventory", "oa")
