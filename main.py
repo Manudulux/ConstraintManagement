@@ -258,11 +258,12 @@ def style_days_since(df: pd.DataFrame, warn: int, high: int, critical: int):
     return styler
 
 # ===========================================================
-# UI — Title & File Upload (with auto-clear filters on file change)
+# SIDEBAR — File Upload, Filters, Thresholds
 # ===========================================================
-st.title("Identifying non-productive inventory")
+st.sidebar.header("Data & Filters")
 
-uploaded_file = st.file_uploader("Upload CSV (optional)", type="csv")
+# Move the upload control to the sidebar (as requested)
+uploaded_file = st.sidebar.file_uploader("Upload CSV (optional)", type="csv")
 
 # Auto-clear filters when file changes
 file_key = uploaded_file.name if uploaded_file is not None else "StockHistorySample.csv"
@@ -274,13 +275,10 @@ elif file_key != st.session_state.active_file_key:
     st.session_state.active_file_key = file_key
     st.toast(f"Filters cleared for new file: {file_key}")
 
+# Load data
 df = load_data(uploaded_file)
 
-# ===========================================================
-# SIDEBAR FILTERS + manual reset button + thresholds
-# ===========================================================
-st.sidebar.header("Filters")
-
+# Sidebar filters and thresholds
 def _opts(series):
     return sorted(pd.Series(series).dropna().unique().tolist())
 
@@ -296,13 +294,14 @@ with st.sidebar.expander("Highlight thresholds", expanded=False):
     critical_threshold = st.number_input("Critical (days)", min_value=0, value=90, step=5)
     st.caption("Rows with higher 'Days Since Zero' get stronger coloring.")
 
-with st.sidebar:
-    if st.button("🧹 Clear all filters"):
-        for k in ["Warehouse", "Hier2", "Hier4", "AB", "Brand"]:
-            st.session_state.pop(k, None)
-        st.rerun()
+if st.sidebar.button("🧹 Clear all filters"):
+    for k in ["Warehouse", "Hier2", "Hier4", "AB", "Brand"]:
+        st.session_state.pop(k, None)
+    st.rerun()
 
-# Apply filters
+# ===========================================================
+# APPLY FILTERS (used by ALL tabs, including Overview)
+# ===========================================================
 filtered = df.copy()
 if warehouse_sel:
     filtered = filtered[filtered["Warehouse"].isin(warehouse_sel)]
@@ -314,6 +313,11 @@ if ab_sel:
     filtered = filtered[filtered["AB"].isin(ab_sel)]
 if brand_sel:
     filtered = filtered[filtered["Brand"].isin(brand_sel)]
+
+# ===========================================================
+# HEADER
+# ===========================================================
+st.title("Identifying non-productive inventory")
 
 # ===========================================================
 # TABS
@@ -331,12 +335,12 @@ overview_tab, qi_tab, bs_tab, rs_tab, oa_tab = st.tabs([
 qty_cols = ["QualityInspectionQty", "BlockedStockQty", "ReturnStockQty", "OveragedTireQty"]
 
 # ===========================================================
-# OVERVIEW TAB
+# OVERVIEW TAB — Linked to filters (uses 'filtered')
 #   1) Totals over time (line chart) + downloads
 #   2) Totals by plant (Warehouse) for the latest period (stacked bar + table) + downloads
 # ===========================================================
 with overview_tab:
-    st.subheader("📈 Total non-productive inventory over time")
+    st.subheader("📈 Total non-productive inventory over time (filtered)")
 
     if "Period" not in filtered.columns:
         st.warning("No 'Period' column found in the dataset.")
@@ -345,7 +349,7 @@ with overview_tab:
         if not available_cols:
             st.warning("No inventory quantity columns found to chart.")
         else:
-            # Totals over time
+            # Totals over time — computed from the FILTERED dataset
             totals_over_time = (
                 filtered
                 .groupby("Period")[available_cols]
@@ -393,8 +397,6 @@ with overview_tab:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         use_container_width=True,
                     )
-                else:
-                    st.info("Excel engine not available — CSV download provided.")
 
             st.markdown("---")
             st.subheader("🏭 Totals by plant (latest period)")
@@ -458,8 +460,6 @@ with overview_tab:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True,
                         )
-                    else:
-                        st.info("Excel engine not available — CSV download provided.")
 
 # ===========================================================
 # METRIC TABS — Shared renderer
@@ -506,8 +506,6 @@ def render_metric_tab(container, df_filt, qty_col, title, key_suffix):
                     use_container_width=True,
                     key=f"dl_xlsx_summary_{key_suffix}",
                 )
-            else:
-                st.info("Excel engine not available — CSV download provided.")
 
         st.markdown("---")
         st.subheader("🔎 Select a material to view full history")
@@ -560,8 +558,6 @@ def render_metric_tab(container, df_filt, qty_col, title, key_suffix):
                     use_container_width=True,
                     key=f"dl_xlsx_hist_{key_suffix}",
                 )
-            else:
-                st.info("Excel engine not available — CSV download provided.")
 
         st.write("### 📊 Quantity Over Time")
         if qty_col in history.columns and "Period" in history.columns:
@@ -579,8 +575,8 @@ def render_metric_tab(container, df_filt, qty_col, title, key_suffix):
         else:
             st.info(f"Column '{qty_col}' or 'Period' not found in history for this selection.")
 
-# Render each metric tab
+# Render each metric tab (all use the same FILTERED dataset)
 render_metric_tab(qi_tab, filtered, "QualityInspectionQty", "Quality Inspection Qty", "qi")
-render_metric_tab(bs_tab, filtered, "BlockedStockQty", "Blocked Stock Qty", "bs")
+render_metric_tab(bs_tab, filtered, "Blocked Stock Qty", "Blocked Stock Qty", "bs")
 render_metric_tab(rs_tab, filtered, "ReturnStockQty", "Return Stock Qty", "rs")
 render_metric_tab(oa_tab, filtered, "OveragedTireQty", "Overaged Inventory", "oa")
