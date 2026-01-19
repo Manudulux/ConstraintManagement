@@ -9,7 +9,7 @@ import os
 def load_data(upload):
     if upload is None:
         # Default automatic loading
-        default_path = "STOCK HISTORY EMMANUEL 2026-01-16T14_25_27.083Z_cleaned.csv"
+        default_path = "StockHistorySample.csv.csv"
         if os.path.exists(default_path):
             df = pd.read_csv(default_path)
         else:
