@@ -1,8 +1,8 @@
 
 # ===========================================================
 #  main.py — Supply Chain Toolkit (Multi‑module Streamlit App)
-#  (Updated: Planning Overview baseline uses most recent PhysicalStock
-#   from inventory when the relevant week has no physical stock.)
+#  (Hotfix: removed incorrect `st.sidebar.session_state` usage in
+#   Planning Overview; now uses the multiselect value directly.)
 # ===========================================================
 
 import streamlit as st
@@ -341,11 +341,8 @@ def run_planning_overview():
 
     # Normalize inventory
     idf.columns = [c.strip() for c in idf.columns]
-    # We expect at least: Warehouse, Period, PhysicalStock (plus optional more)
-    # Parse Period
     if "Period" in idf.columns:
         idf["Period"] = pd.to_datetime(idf["Period"], errors="coerce", infer_datetime_format=True)
-    # Parse PhysicalStock
     if "PhysicalStock" in idf.columns:
         idf["PhysicalStock"] = (idf["PhysicalStock"].astype(str)
                                   .str.replace(" ","", regex=False)
@@ -353,16 +350,13 @@ def run_planning_overview():
                                   .str.strip())
         idf["PhysicalStock"] = pd.to_numeric(idf["PhysicalStock"], errors="coerce").fillna(0)
 
-    # Build weekly physical stock by plant from inventory (ISO year/week)
+    # Build weekly physical stock by plant (ISO year/week)
     inv_weekly = pd.DataFrame()
     if {"Warehouse","Period","PhysicalStock"}.issubset(idf.columns):
         iso = idf["Period"].dt.isocalendar()
         idf["ISO_Year"] = iso.year
         idf["ISO_Week"] = iso.week
-        # Sum physical stock across materials per plant per ISO week
-        inv_weekly = (idf.groupby(["Warehouse","ISO_Year","ISO_Week"], dropna=True)["PhysicalStock"]
-                        .sum()
-                        .reset_index())
+        inv_weekly = (idf.groupby(["Warehouse","ISO_Year","ISO_Week"], dropna=True)["PhysicalStock"].sum().reset_index())
         inv_weekly["YearWeekIdx"] = inv_weekly["ISO_Year"]*100 + inv_weekly["ISO_Week"]
 
     # ---------- Sidebar controls (NO uploaders) ----------
@@ -381,7 +375,6 @@ def run_planning_overview():
 
     # ---------- Build Projection with baseline rule ----------
     def build_projection(fdf: pd.DataFrame, inv_weekly: pd.DataFrame, start_df: pd.DataFrame):
-        # Aggregate forecast by Warehouse/Year/Week and split details
         group_cols = ["Warehouse","Period_Year","Week_num","Loadingtype","SelectedDimension"]
         agg = fdf.groupby(group_cols)["Transfer_Quantity"].sum().reset_index()
         pivot = (agg.pivot_table(index=["Warehouse","Period_Year","Week_num"],
@@ -390,7 +383,6 @@ def run_planning_overview():
         # Flatten
         pivot.columns = [f"{a}_{b}" if isinstance((a,b), tuple) and b != '' else (a if not isinstance((a,b), tuple) else a)
                          for (a,b) in [(c if isinstance(c, tuple) else (c,'')) for c in pivot.columns]]
-        # Ensure detail cols
         for lt in ("Load","Unload"):
             for sd in ("Loose","Pallet","Mixed"):
                 col = f"{lt}_{sd}"
@@ -399,22 +391,18 @@ def run_planning_overview():
         pivot["Load_Total"]   = pivot["Load_Loose"] + pivot["Load_Pallet"] + pivot["Load_Mixed"]
         pivot["Unload_Total"] = pivot["Unload_Loose"] + pivot["Unload_Pallet"] + pivot["Unload_Mixed"]
 
-        # Sort
         pivot = pivot.sort_values(["Warehouse","Period_Year","Week_num"]) 
         pivot["YearWeekIdx"] = pivot["Period_Year"]*100 + pivot["Week_num"].astype(int)
 
-        # Starting stock fallback map
         start_map = dict(zip(start_df["Warehouse"], pd.to_numeric(start_df["Starting_PhysicalStock"], errors="coerce").fillna(0)))
 
         results = []
         for wh, grp in pivot.groupby("Warehouse", sort=False):
             grp = grp.sort_values(["Period_Year","Week_num"]).copy()
-            # Determine baseline for FIRST forecast week for this plant
             first_idx = int(grp.iloc[0]["YearWeekIdx"]) if len(grp)>0 else None
             baseline = None
             if not inv_weekly.empty and wh in inv_weekly["Warehouse"].unique():
                 sub = inv_weekly[inv_weekly["Warehouse"]==wh].copy()
-                # Prefer exact match for the first week; else use most recent prior week value
                 exact = sub[sub["YearWeekIdx"]==first_idx]
                 if not exact.empty:
                     baseline = float(exact["PhysicalStock"].iloc[0])
@@ -425,7 +413,6 @@ def run_planning_overview():
             if baseline is None:
                 baseline = float(start_map.get(wh, 0))
 
-            # Cumulative week-by-week projection from that baseline
             proj_vals = []
             prev = baseline
             for _, r in grp.iterrows():
@@ -460,14 +447,7 @@ def run_planning_overview():
         st.caption(f"Inventory baseline source: {inv_note}")
 
     st.subheader("📄 Inventory Projection (week by week)")
-    view_plants = st.sidebar.session_state.get('planning_view_plants')
-    # ensure we keep the chosen filter; if not set, default to all plants
-    if view_plants is None:
-        view_plants = sorted(fdf["Warehouse"].dropna().unique())
-        st.sidebar.session_state['planning_view_plants'] = view_plants
-    # Use current sidebar selection (already set above as view_plants variable earlier)
-    view_df = proj[proj["Warehouse"].isin(st.sidebar.session_state['planning_view_plants'])].copy() if st.sidebar.session_state['planning_view_plants'] else proj.copy()
-    # But in UI we show based on latest selection variable created earlier
+    # Use the multiselect choice directly
     view_df = proj[proj["Warehouse"].isin(view_plants)].copy() if view_plants else proj.copy()
     view_df = view_df.sort_values(["Warehouse","Period_Year","Week_num"])
     st.dataframe(view_df, use_container_width=True, height=450)
