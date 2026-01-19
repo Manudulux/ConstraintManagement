@@ -120,17 +120,37 @@ def load_data(upload):
     return df
 
 # ===========================================================
-# DOWNLOAD HELPERS
+# DOWNLOAD HELPERS (CSV always; Excel with engine fallback)
 # ===========================================================
 def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8")
 
-def df_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "Sheet1") -> bytes:
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name=sheet_name)
-    buf.seek(0)
-    return buf.getvalue()
+def df_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "Sheet1"):
+    """
+    Returns an .xlsx as bytes if an Excel engine is available.
+    Tries 'openpyxl' first (preferred), then falls back to 'xlsxwriter'.
+    If neither engine is present, returns None so the UI can hide the Excel button.
+    """
+    # Try openpyxl
+    try:
+        buf = BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name=sheet_name)
+        buf.seek(0)
+        return buf.getvalue()
+    except Exception:
+        pass
+
+    # Fallback: try xlsxwriter
+    try:
+        buf = BytesIO()
+        with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+            df.to_excel(writer, index=False, sheet_name=sheet_name)
+        buf.seek(0)
+        return buf.getvalue()
+    except Exception:
+        # No Excel engines available in this environment
+        return None
 
 # ===========================================================
 # HELPERS
@@ -209,7 +229,6 @@ def get_available_qty_cols(df: pd.DataFrame):
     return [c for c in candidates if c in df.columns]
 
 # === Styling: highlight high 'Days Since Zero' ================================
-# NOTE: removed the return type annotation to prevent import-time resolution issues.
 def style_days_since(df: pd.DataFrame, warn: int, high: int, critical: int):
     """
     Color-code the 'Days Since Zero' column with thresholds:
@@ -365,13 +384,17 @@ with overview_tab:
                     use_container_width=True,
                 )
             with c2:
-                st.download_button(
-                    "⬇️ Download totals-over-time (Excel)",
-                    data=df_to_excel_bytes(totals_over_time, "TotalsOverTime"),
-                    file_name="totals_over_time.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
+                totals_over_time_xlsx = df_to_excel_bytes(totals_over_time, "TotalsOverTime")
+                if totals_over_time_xlsx is not None:
+                    st.download_button(
+                        "⬇️ Download totals-over-time (Excel)",
+                        data=totals_over_time_xlsx,
+                        file_name="totals_over_time.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+                else:
+                    st.info("Excel engine not available — CSV download provided.")
 
             st.markdown("---")
             st.subheader("🏭 Totals by plant (latest period)")
@@ -426,13 +449,17 @@ with overview_tab:
                         use_container_width=True,
                     )
                 with c4:
-                    st.download_button(
-                        "⬇️ Download totals-by-plant (Excel)",
-                        data=df_to_excel_bytes(by_plant, "TotalsByPlant_Latest"),
-                        file_name="totals_by_plant_latest_period.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
+                    by_plant_xlsx = df_to_excel_bytes(by_plant, "TotalsByPlant_Latest")
+                    if by_plant_xlsx is not None:
+                        st.download_button(
+                            "⬇️ Download totals-by-plant (Excel)",
+                            data=by_plant_xlsx,
+                            file_name="totals_by_plant_latest_period.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                        )
+                    else:
+                        st.info("Excel engine not available — CSV download provided.")
 
 # ===========================================================
 # METRIC TABS — Shared renderer
@@ -469,14 +496,18 @@ def render_metric_tab(container, df_filt, qty_col, title, key_suffix):
                 key=f"dl_csv_summary_{key_suffix}",
             )
         with col_b:
-            st.download_button(
-                "⬇️ Download summary (Excel)",
-                data=df_to_excel_bytes(summary_df, f"{qty_col}_Summary"),
-                file_name=f"{qty_col.lower()}_summary.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key=f"dl_xlsx_summary_{key_suffix}",
-            )
+            summary_xlsx = df_to_excel_bytes(summary_df, f"{qty_col}_Summary")
+            if summary_xlsx is not None:
+                st.download_button(
+                    "⬇️ Download summary (Excel)",
+                    data=summary_xlsx,
+                    file_name=f"{qty_col.lower()}_summary.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key=f"dl_xlsx_summary_{key_suffix}",
+                )
+            else:
+                st.info("Excel engine not available — CSV download provided.")
 
         st.markdown("---")
         st.subheader("🔎 Select a material to view full history")
@@ -519,14 +550,18 @@ def render_metric_tab(container, df_filt, qty_col, title, key_suffix):
                 key=f"dl_csv_hist_{key_suffix}",
             )
         with col_d:
-            st.download_button(
-                "⬇️ Download history (Excel)",
-                data=df_to_excel_bytes(history, f"{qty_col}_History"),
-                file_name=f"{qty_col.lower()}_{mat}_{wh}_history.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key=f"dl_xlsx_hist_{key_suffix}",
-            )
+            hist_xlsx = df_to_excel_bytes(history, f"{qty_col}_History")
+            if hist_xlsx is not None:
+                st.download_button(
+                    "⬇️ Download history (Excel)",
+                    data=hist_xlsx,
+                    file_name=f"{qty_col.lower()}_{mat}_{wh}_history.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key=f"dl_xlsx_hist_{key_suffix}",
+                )
+            else:
+                st.info("Excel engine not available — CSV download provided.")
 
         st.write("### 📊 Quantity Over Time")
         if qty_col in history.columns and "Period" in history.columns:
