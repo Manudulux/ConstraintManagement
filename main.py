@@ -5,7 +5,7 @@ import os
 import altair as alt
 
 # -----------------------------------------------------------
-# PAGE CONFIG
+# PAGE CONFIG: MAXIMIZE CENTRAL SECTION
 # -----------------------------------------------------------
 st.set_page_config(
     page_title="Inventory Quality Dashboard",
@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------
-# LOAD DATA WITH CLEANING
+# LOAD DATA WITH NUMERIC CLEANING
 # -----------------------------------------------------------
 def load_data(upload):
     if upload is None:
@@ -27,16 +27,16 @@ def load_data(upload):
     else:
         df = pd.read_csv(upload)
 
+    # Ensure datetime
     df["Period"] = pd.to_datetime(df["Period"], errors="coerce")
 
-    # Columns to numeric
+    # Columns we might plot/filter on and need numeric
     qty_cols = [
         "QualityInspectionQty",
         "BlockedStockQty",
         "ReturnStockQty",
         "OveragedTireQty",
     ]
-
     for col in qty_cols:
         if col in df.columns:
             df[col] = (
@@ -51,30 +51,39 @@ def load_data(upload):
 
 
 # -----------------------------------------------------------
-# LAST ZERO DATE HELPER
+# HELPERS
 # -----------------------------------------------------------
-def compute_last_zero(df, col):
-    df = df.sort_values("Period")
-    zeros = df[df[col] == 0]["Period"]
-    return zeros.max() if not zeros.empty else None
+def compute_first_nonzero_date(hist_df: pd.DataFrame, qty_col: str):
+    """Return earliest Period with qty_col > 0, or None if never >0."""
+    pos = hist_df.loc[hist_df[qty_col] > 0, "Period"]
+    return pos.min() if not pos.empty else None
 
 
 # -----------------------------------------------------------
-# SUMMARY BUILDER (Latest Period Only)
+# SUMMARY BUILDER (latest period only)
 # -----------------------------------------------------------
-def build_summary(df, qty_column):
+def build_summary(df: pd.DataFrame, qty_column: str) -> pd.DataFrame:
+    # Identify time bounds
     latest_period = df["Period"].max()
     oldest_period = df["Period"].min()
 
-    if latest_period is None:
+    # If no dates, return empty structure
+    if pd.isna(latest_period) or pd.isna(oldest_period):
         return pd.DataFrame(columns=[
             "SapCode", "MaterialDescription", "Warehouse", "Brand",
             "AB", "Hier2", "Hier4", "Quantity", "Last Zero Date", "Days Since Zero"
         ])
 
+    # Look only at the latest period’s snapshot
     latest = df[df["Period"] == latest_period]
 
-    # Only > 0 values
+    # Keep only pairs with quantity > 0 in this metric at the latest period
+    if qty_column not in latest.columns:
+        # Metric column missing in data -> no rows
+        return pd.DataFrame(columns=[
+            "SapCode", "MaterialDescription", "Warehouse", "Brand",
+            "AB", "Hier2", "Hier4", "Quantity", "Last Zero Date", "Days Since Zero"
+        ])
     latest = latest[latest[qty_column] > 0]
 
     if latest.empty:
@@ -84,44 +93,40 @@ def build_summary(df, qty_column):
         ])
 
     results = []
-
+    # Material + Warehouse granularity (as requested)
     for (mat, wh), _ in latest.groupby(["SapCode", "Warehouse"]):
+        # Full history for this pair
         hist = (
-            df[(df["SapCode"] == mat) &
-               (df["Warehouse"] == wh)]
+            df[(df["SapCode"] == mat) & (df["Warehouse"] == wh)]
             .sort_values("Period")
         )
 
-        last_zero = compute_last_zero(hist, qty_column)
-
-        if last_zero is None:
-            last_zero_date = oldest_period
-            days_since_zero = (latest_period - oldest_period).days
-        else:
-            last_zero_date = last_zero
-            days_since_zero = (latest_period - last_zero).days
+        # Earliest date when qty became > 0 for THIS metric
+        since_date = compute_first_nonzero_date(hist, qty_column)
+        if since_date is None:
+            # never positive -> fallback to oldest period
+            since_date = oldest_period
 
         latest_row = hist.iloc[-1]
+        quantity_latest = latest_row[qty_column] if qty_column in latest_row else 0
 
         results.append({
             "SapCode": mat,
-            "MaterialDescription": latest_row["MaterialDescription"],
+            "MaterialDescription": latest_row.get("MaterialDescription", ""),
             "Warehouse": wh,
-            "Brand": latest_row["Brand"],
-            "AB": latest_row["AB"],
-            "Hier2": latest_row["Hier2"],
-            "Hier4": latest_row["Hier4"],
-            "Quantity": latest_row[qty_column],
-            "Last Zero Date": last_zero_date.date(),
-            "Days Since Zero": days_since_zero
+            "Brand": latest_row.get("Brand", ""),
+            "AB": latest_row.get("AB", ""),
+            "Hier2": latest_row.get("Hier2", ""),
+            "Hier4": latest_row.get("Hier4", ""),
+            "Quantity": quantity_latest,
+            # Column label keeps the original wording you used
+            "Last Zero Date": since_date.date(),
+            "Days Since Zero": (latest_period - since_date).days,
         })
 
     df_result = pd.DataFrame(results)
-
-    if df_result.empty:
-        return df_result
-
-    return df_result.sort_values("Quantity", ascending=False)
+    # Sort by decreasing quantity (as requested)
+    return df_result.sort_values("Quantity", ascending=False) if not df_result.empty else df_result
 
 
 # -----------------------------------------------------------
@@ -138,18 +143,17 @@ df = load_data(uploaded_file)
 st.sidebar.header("Filters")
 
 filters = {
-    "Warehouse": st.sidebar.multiselect("Warehouse", sorted(df["Warehouse"].unique())),
-    "Hier2": st.sidebar.multiselect("Hier2", sorted(df["Hier2"].unique())),
-    "Hier4": st.sidebar.multiselect("Hier4", sorted(df["Hier4"].unique())),
-    "AB": st.sidebar.multiselect("AB", sorted(df["AB"].unique())),
-    "Brand": st.sidebar.multiselect("Brand", sorted(df["Brand"].unique())),
+    "Warehouse": st.sidebar.multiselect("Warehouse", sorted(df["Warehouse"].dropna().unique())),
+    "Hier2": st.sidebar.multiselect("Hier2", sorted(df["Hier2"].dropna().unique())),
+    "Hier4": st.sidebar.multiselect("Hier4", sorted(df["Hier4"].dropna().unique())),
+    "AB": st.sidebar.multiselect("AB", sorted(df["AB"].dropna().unique())),
+    "Brand": st.sidebar.multiselect("Brand", sorted(df["Brand"].dropna().unique())),
 }
 
 filtered = df.copy()
 for col, selected in filters.items():
     if selected:
         filtered = filtered[filtered[col].isin(selected)]
-
 
 # -----------------------------------------------------------
 # TABS (4 TOTAL)
@@ -181,6 +185,7 @@ for tab, qty_col in zip(tabs, qty_cols):
             st.warning("No data available for the selected filters.")
             continue
 
+        # Add selection checkbox to enable 'click' behaviour
         df_display = summary_df.copy()
         df_display["Select"] = False
 
