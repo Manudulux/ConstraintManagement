@@ -5,16 +5,16 @@ import os
 import altair as alt
 
 # -----------------------------------------------------------
-# CONFIGURATION — MAKE CENTRAL SECTION MUCH LARGER
+# PAGE CONFIG: MAXIMIZE CENTRAL SECTION
 # -----------------------------------------------------------
 st.set_page_config(
     page_title="Inventory Quality Dashboard",
-    layout="wide",                # << VERY LARGE CENTER SECTION
-    initial_sidebar_state="expanded"
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 # -----------------------------------------------------------
-# LOAD DATA
+# LOAD DATA WITH NUMERIC CLEANING
 # -----------------------------------------------------------
 def load_data(upload):
     if upload is None:
@@ -22,14 +22,15 @@ def load_data(upload):
         if os.path.exists(default_path):
             df = pd.read_csv(default_path)
         else:
-            st.error("Default file not found. Please upload a CSV.")
+            st.error("Default file StockHistorySample.csv not found. Upload a file.")
             st.stop()
     else:
         df = pd.read_csv(upload)
 
-    df["Period"] = pd.to_datetime(df["Period"])
+    # Convert Period column
+    df["Period"] = pd.to_datetime(df["Period"], errors="coerce")
 
-    # Ensure numeric quality fields (fixes your crash)
+    # Convert quality columns to numeric
     qty_cols = ["QualityInspectionQty", "BlockedStockQty", "ReturnStockQty"]
 
     for col in qty_cols:
@@ -45,7 +46,7 @@ def load_data(upload):
 
 
 # -----------------------------------------------------------
-# LAST ZERO DATE HELPER
+# HELPER: LAST ZERO DATE
 # -----------------------------------------------------------
 def compute_last_zero(df, col):
     df = df.sort_values("Period")
@@ -54,44 +55,79 @@ def compute_last_zero(df, col):
 
 
 # -----------------------------------------------------------
-# BUILD SUMMARY — ONLY LATEST PERIOD
+# BUILD SUMMARY (latest period only)
 # -----------------------------------------------------------
 def build_summary(df, qty_column):
     latest_period = df["Period"].max()
+    oldest_period = df["Period"].min()
+
     latest = df[df["Period"] == latest_period]
 
-    # Only materials with quantity > 0
+    if latest.empty:
+        return pd.DataFrame(columns=[
+            "SapCode", "MaterialDescription", "Warehouse", "Brand",
+            "AB", "Hier2", "Hier4", "Quantity", "Last Zero Date", "Days Since Zero"
+        ])
+
+    # Keep only materials > 0 in the latest period
     latest = latest[latest[qty_column] > 0]
 
+    if latest.empty:
+        return pd.DataFrame(columns=[
+            "SapCode", "MaterialDescription", "Warehouse", "Brand",
+            "AB", "Hier2", "Hier4", "Quantity", "Last Zero Date", "Days Since Zero"
+        ])
+
     results = []
-    for (mat, wh), group in latest.groupby(["SapCode", "Warehouse"]):
-        hist = df[(df["SapCode"] == mat) & (df["Warehouse"] == wh)].sort_values("Period")
+
+    for (mat, wh), _ in latest.groupby(["SapCode", "Warehouse"]):
+
+        hist = (
+            df[(df["SapCode"] == mat) &
+               (df["Warehouse"] == wh)]
+            .sort_values("Period")
+        )
+
         last_zero = compute_last_zero(hist, qty_column)
+
+        # NEW LOGIC: if no zero found → use oldest period
+        if last_zero is None:
+            last_zero_date = oldest_period
+            days_since_zero = (latest_period - oldest_period).days
+        else:
+            last_zero_date = last_zero
+            days_since_zero = (latest_period - last_zero).days
+
+        latest_row = hist.iloc[-1]
 
         results.append({
             "SapCode": mat,
-            "MaterialDescription": hist.iloc[-1]["MaterialDescription"],
+            "MaterialDescription": latest_row["MaterialDescription"],
             "Warehouse": wh,
-            "Brand": hist.iloc[-1]["Brand"],
-            "AB": hist.iloc[-1]["AB"],
-            "Hier2": hist.iloc[-1]["Hier2"],
-            "Hier4": hist.iloc[-1]["Hier4"],
-            "Quantity": hist.iloc[-1][qty_column],
-            "Last Zero Date": last_zero.date() if last_zero else None,
-            "Days Since Zero": (hist.iloc[-1]["Period"] - last_zero).days if last_zero else None
+            "Brand": latest_row["Brand"],
+            "AB": latest_row["AB"],
+            "Hier2": latest_row["Hier2"],
+            "Hier4": latest_row["Hier4"],
+            "Quantity": latest_row[qty_column],
+            "Last Zero Date": last_zero_date.date(),
+            "Days Since Zero": days_since_zero
         })
 
     df_result = pd.DataFrame(results)
+
+    if df_result.empty:
+        return df_result
+
     return df_result.sort_values("Quantity", ascending=False)
 
 
 # -----------------------------------------------------------
-# TITLE
+# APP TITLE
 # -----------------------------------------------------------
 st.title("📦 Inventory Quality / Blocked / Return Stock Analyzer")
 
-uploaded = st.file_uploader("Upload CSV (optional)", type="csv")
-df = load_data(uploaded)
+uploaded_file = st.file_uploader("Upload CSV (optional)", type="csv")
+df = load_data(uploaded_file)
 
 # -----------------------------------------------------------
 # SIDEBAR FILTERS
@@ -115,30 +151,40 @@ for col, selected in filters.items():
 # -----------------------------------------------------------
 # TABS
 # -----------------------------------------------------------
-tabs = st.tabs(["Quality Inspection", "Blocked Stock", "Return Stock"])
+tabs = st.tabs([
+    "Quality Inspection Qty",
+    "Blocked Stock Qty",
+    "Return Stock Qty"
+])
+
 qty_cols = ["QualityInspectionQty", "BlockedStockQty", "ReturnStockQty"]
 
+
 # -----------------------------------------------------------
-# LOOP THROUGH TABS
+# RENDER EACH TAB
 # -----------------------------------------------------------
 for tab, qty_col in zip(tabs, qty_cols):
     with tab:
         st.subheader(f"📌 {qty_col} — Latest Period Overview")
 
-        summary = build_summary(filtered, qty_col)
+        summary_df = build_summary(filtered, qty_col)
 
-        # Create a selection column
-        summary_display = summary.copy()
-        summary_display["Select"] = False
+        if summary_df.empty:
+            st.warning("No data available for the selected filters.")
+            continue
+
+        # Add selection checkbox
+        df_display = summary_df.copy()
+        df_display["Select"] = False
 
         selected = st.data_editor(
-            summary_display,
-            use_container_width=True,   # << FULL WIDTH TABLE
+            df_display,
+            use_container_width=True,
             hide_index=True,
-            height=650,                 # << TALLER CENTRAL SECTION
+            height=700,
             column_config={
                 "Select": st.column_config.CheckboxColumn(required=False)
-            }
+            },
         )
 
         selected_rows = selected[selected["Select"] == True]
@@ -150,26 +196,26 @@ for tab, qty_col in zip(tabs, qty_cols):
             mat = selected_rows.iloc[0]["SapCode"]
             wh = selected_rows.iloc[0]["Warehouse"]
 
-            hist = (
+            history = (
                 filtered[(filtered["SapCode"] == mat) &
                          (filtered["Warehouse"] == wh)]
                 .sort_values("Period")
             )
 
             st.write("### 📄 Full History Table")
-            st.dataframe(hist, use_container_width=True, height=500)
+            st.dataframe(history, use_container_width=True, height=600)
 
             st.write("### 📊 Quantity Over Time")
 
             chart = (
-                alt.Chart(hist)
+                alt.Chart(history)
                 .mark_line(point=True)
                 .encode(
                     x=alt.X("Period:T", title="Period"),
                     y=alt.Y(f"{qty_col}:Q", title="Quantity"),
-                    tooltip=["Period", qty_col]
+                    tooltip=["Period", qty_col],
                 )
-                .properties(height=500, width=1200)   # << MUCH LARGER CHART
+                .properties(height=500, width=1400)
             )
 
             st.altair_chart(chart, use_container_width=True)
