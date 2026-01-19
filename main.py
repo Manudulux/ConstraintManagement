@@ -2,121 +2,146 @@
 import streamlit as st
 import pandas as pd
 import os
+import altair as alt
 
-# ---------------------------
-# Load file function
-# ---------------------------
+# -----------------------------------
+# Load Data
+# -----------------------------------
 def load_data(upload):
     if upload is None:
-        # Default automatic loading
-        default_path = "StockHistorySample.csv.csv"
+        default_path = "StockHistorySample.csv"
         if os.path.exists(default_path):
             df = pd.read_csv(default_path)
         else:
-            st.error("Default file not found. Please upload a file.")
+            st.error("Default file not found. Upload a CSV.")
             st.stop()
     else:
         df = pd.read_csv(upload)
 
-    # Parse dates
     df["Period"] = pd.to_datetime(df["Period"])
-
     return df
 
 
-# ---------------------------
-# Compute “last zero date”
-# ---------------------------
-def compute_last_zero(df, qty_column):
+# -----------------------------------
+# Compute last zero date
+# -----------------------------------
+def compute_last_zero(df, col):
     df = df.sort_values("Period")
-    zero_dates = df[df[qty_column] == 0]["Period"]
-
-    if len(zero_dates) == 0:
-        return None
-    return zero_dates.max()
+    zeros = df[df[col] == 0]["Period"]
+    return zeros.max() if not zeros.empty else None
 
 
-# ---------------------------
-# Streamlit App
-# ---------------------------
+# -----------------------------------
+# Build latest-period summary
+# -----------------------------------
+def build_summary(df, qty_column):
+    latest_period = df["Period"].max()
+    latest = df[df["Period"] == latest_period]
+
+    # Only materials with non-zero quantity
+    latest = latest[latest[qty_column] > 0]
+
+    results = []
+    for (mat, wh), group in latest.groupby(["SapCode", "Warehouse"]):
+        hist = df[(df["SapCode"] == mat) & (df["Warehouse"] == wh)].sort_values("Period")
+        last_zero = compute_last_zero(hist, qty_column)
+
+        results.append({
+            "SapCode": mat,
+            "MaterialDescription": hist.iloc[-1]["MaterialDescription"],
+            "Warehouse": wh,
+            "Brand": hist.iloc[-1]["Brand"],
+            "AB": hist.iloc[-1]["AB"],
+            "Hier2": hist.iloc[-1]["Hier2"],
+            "Hier4": hist.iloc[-1]["Hier4"],
+            "Quantity": hist.iloc[-1][qty_column],
+            "Last Zero Date": last_zero.date() if last_zero else None,
+            "Days Since Zero": (hist.iloc[-1]["Period"] - last_zero).days if last_zero else None
+        })
+
+    df_result = pd.DataFrame(results)
+    return df_result.sort_values("Quantity", ascending=False)
+
+
+# -----------------------------------
+# UI
+# -----------------------------------
 st.title("📦 Inventory Quality / Blocked / Return Stock Analyzer")
 
 uploaded_file = st.file_uploader("Upload CSV (optional)", type="csv")
 df = load_data(uploaded_file)
 
-
-# ---------------------------
-# Sidebar Filters
-# ---------------------------
+# -----------------------------------
+# Sidebar filters
+# -----------------------------------
 st.sidebar.header("Filters")
 
-warehouse_sel = st.sidebar.multiselect("Warehouse", sorted(df["Warehouse"].unique()))
-hier2_sel = st.sidebar.multiselect("Hier2", sorted(df["Hier2"].unique()))
-hier4_sel = st.sidebar.multiselect("Hier4", sorted(df["Hier4"].unique()))
-ab_sel = st.sidebar.multiselect("AB", sorted(df["AB"].unique()))
-brand_sel = st.sidebar.multiselect("Brand", sorted(df["Brand"].unique()))
+filters = {
+    "Warehouse": st.sidebar.multiselect("Warehouse", sorted(df["Warehouse"].unique())),
+    "Hier2": st.sidebar.multiselect("Hier2", sorted(df["Hier2"].unique())),
+    "Hier4": st.sidebar.multiselect("Hier4", sorted(df["Hier4"].unique())),
+    "AB": st.sidebar.multiselect("AB", sorted(df["AB"].unique())),
+    "Brand": st.sidebar.multiselect("Brand", sorted(df["Brand"].unique())),
+}
 
-# Apply filters
 filtered = df.copy()
+for col, sel in filters.items():
+    if sel:
+        filtered = filtered[filtered[col].isin(sel)]
 
-if warehouse_sel:
-    filtered = filtered[filtered["Warehouse"].isin(warehouse_sel)]
-if hier2_sel:
-    filtered = filtered[filtered["Hier2"].isin(hier2_sel)]
-if hier4_sel:
-    filtered = filtered[filtered["Hier4"].isin(hier4_sel)]
-if ab_sel:
-    filtered = filtered[filtered["AB"].isin(ab_sel)]
-if brand_sel:
-    filtered = filtered[filtered["Brand"].isin(brand_sel)]
+# -----------------------------------
+# Tabs
+# -----------------------------------
+tabs = st.tabs(["Quality Inspection", "Blocked Stock", "Return Stock"])
+qty_columns = ["QualityInspectionQty", "BlockedStockQty", "ReturnStockQty"]
 
+# -----------------------------------
+# Display each tab
+# -----------------------------------
+for tab, qty_col in zip(tabs, qty_columns):
+    with tab:
+        st.subheader(f"{qty_col} – Latest Period Overview")
 
-# ---------------------------
-# Compute metrics for each Material
-# ---------------------------
-materials = []
+        summary_df = build_summary(filtered, qty_col)
 
-for material, group in filtered.groupby("SapCode"):
-    group = group.sort_values("Period")
-    latest = group.iloc[-1]
+        # Add selection column
+        summary_df_display = summary_df.copy()
+        summary_df_display["Select"] = False
 
-    result = {
-        "SapCode": material,
-        "MaterialDescription": latest["MaterialDescription"],
-        "Latest Period": latest["Period"].date(),
-        "Warehouse": latest["Warehouse"],
-        "Brand": latest["Brand"],
-        "AB": latest["AB"],
-        "Hier2": latest["Hier2"],
-        "Hier4": latest["Hier4"],
+        selected = st.data_editor(
+            summary_df_display,
+            use_container_width=True,
+            hide_index=True,
+            height=600,
+            column_config={
+                "Select": st.column_config.CheckboxColumn(required=False)
+            }
+        )
 
-        # Quantities today
-        "QualityInspectionQty": latest["QualityInspectionQty"],
-        "BlockedStockQty": latest["BlockedStockQty"],
-        "ReturnStockQty": latest["ReturnStockQty"],
-    }
+        # Get selected rows
+        selected_rows = selected[selected["Select"] == True]
 
-    # Compute “last zero” dates
-    for col in ["QualityInspectionQty", "BlockedStockQty", "ReturnStockQty"]:
-        last_zero = compute_last_zero(group, col)
-        result[f"{col} – Last Zero Date"] = last_zero.date() if last_zero else None
+        if len(selected_rows) == 1:
+            st.markdown("### 📈 Full History for Selected Material")
 
-        if last_zero:
-            result[f"{col} – Days Since Zero"] = (latest["Period"] - last_zero).days
-        else:
-            result[f"{col} – Days Since Zero"] = None
+            mat = selected_rows.iloc[0]["SapCode"]
+            wh = selected_rows.iloc[0]["Warehouse"]
 
-    materials.append(result)
+            history = filtered[(filtered["SapCode"] == mat) &
+                               (filtered["Warehouse"] == wh)].sort_values("Period")
 
-result_df = pd.DataFrame(materials)
+            st.write("#### Complete History (Table)")
+            st.dataframe(history, use_container_width=True)
 
-
-# ---------------------------
-# Display
-# ---------------------------
-st.subheader("Filtered Material Overview")
-st.dataframe(result_df)
-
-# Allow download
-csv_download = result_df.to_csv(index=False).encode("utf-8")
-st.download_button("Download Results as CSV", csv_download, "inventory_analysis.csv")
+            st.write("#### Quantity Over Time")
+            chart = (
+                alt.Chart(history)
+                .mark_line(point=True)
+                .encode(
+                    x="Period:T",
+                    y=qty_col + ":Q",
+                    tooltip=["Period", qty_col]
+                )
+                .properties(height=400)
+            )
+            st.altair_chart(chart, use_container_width=True)
