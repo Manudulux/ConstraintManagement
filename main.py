@@ -4,41 +4,63 @@ import pandas as pd
 import os
 import altair as alt
 
-# -----------------------------------
-# Load Data
-# -----------------------------------
+# -----------------------------------------------------------
+# CONFIGURATION — MAKE CENTRAL SECTION MUCH LARGER
+# -----------------------------------------------------------
+st.set_page_config(
+    page_title="Inventory Quality Dashboard",
+    layout="wide",                # << VERY LARGE CENTER SECTION
+    initial_sidebar_state="expanded"
+)
+
+# -----------------------------------------------------------
+# LOAD DATA
+# -----------------------------------------------------------
 def load_data(upload):
     if upload is None:
         default_path = "StockHistorySample.csv"
         if os.path.exists(default_path):
             df = pd.read_csv(default_path)
         else:
-            st.error("Default file not found. Upload a CSV.")
+            st.error("Default file not found. Please upload a CSV.")
             st.stop()
     else:
         df = pd.read_csv(upload)
 
     df["Period"] = pd.to_datetime(df["Period"])
+
+    # Ensure numeric quality fields (fixes your crash)
+    qty_cols = ["QualityInspectionQty", "BlockedStockQty", "ReturnStockQty"]
+
+    for col in qty_cols:
+        df[col] = (
+            df[col]
+            .astype(str)
+            .str.replace(",", "", regex=False)
+            .str.strip()
+        )
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
     return df
 
 
-# -----------------------------------
-# Compute last zero date
-# -----------------------------------
+# -----------------------------------------------------------
+# LAST ZERO DATE HELPER
+# -----------------------------------------------------------
 def compute_last_zero(df, col):
     df = df.sort_values("Period")
     zeros = df[df[col] == 0]["Period"]
     return zeros.max() if not zeros.empty else None
 
 
-# -----------------------------------
-# Build latest-period summary
-# -----------------------------------
+# -----------------------------------------------------------
+# BUILD SUMMARY — ONLY LATEST PERIOD
+# -----------------------------------------------------------
 def build_summary(df, qty_column):
     latest_period = df["Period"].max()
     latest = df[df["Period"] == latest_period]
 
-    # Only materials with non-zero quantity
+    # Only materials with quantity > 0
     latest = latest[latest[qty_column] > 0]
 
     results = []
@@ -63,17 +85,17 @@ def build_summary(df, qty_column):
     return df_result.sort_values("Quantity", ascending=False)
 
 
-# -----------------------------------
-# UI
-# -----------------------------------
+# -----------------------------------------------------------
+# TITLE
+# -----------------------------------------------------------
 st.title("📦 Inventory Quality / Blocked / Return Stock Analyzer")
 
-uploaded_file = st.file_uploader("Upload CSV (optional)", type="csv")
-df = load_data(uploaded_file)
+uploaded = st.file_uploader("Upload CSV (optional)", type="csv")
+df = load_data(uploaded)
 
-# -----------------------------------
-# Sidebar filters
-# -----------------------------------
+# -----------------------------------------------------------
+# SIDEBAR FILTERS
+# -----------------------------------------------------------
 st.sidebar.header("Filters")
 
 filters = {
@@ -85,63 +107,69 @@ filters = {
 }
 
 filtered = df.copy()
-for col, sel in filters.items():
-    if sel:
-        filtered = filtered[filtered[col].isin(sel)]
+for col, selected in filters.items():
+    if selected:
+        filtered = filtered[filtered[col].isin(selected)]
 
-# -----------------------------------
-# Tabs
-# -----------------------------------
+
+# -----------------------------------------------------------
+# TABS
+# -----------------------------------------------------------
 tabs = st.tabs(["Quality Inspection", "Blocked Stock", "Return Stock"])
-qty_columns = ["QualityInspectionQty", "BlockedStockQty", "ReturnStockQty"]
+qty_cols = ["QualityInspectionQty", "BlockedStockQty", "ReturnStockQty"]
 
-# -----------------------------------
-# Display each tab
-# -----------------------------------
-for tab, qty_col in zip(tabs, qty_columns):
+# -----------------------------------------------------------
+# LOOP THROUGH TABS
+# -----------------------------------------------------------
+for tab, qty_col in zip(tabs, qty_cols):
     with tab:
-        st.subheader(f"{qty_col} – Latest Period Overview")
+        st.subheader(f"📌 {qty_col} — Latest Period Overview")
 
-        summary_df = build_summary(filtered, qty_col)
+        summary = build_summary(filtered, qty_col)
 
-        # Add selection column
-        summary_df_display = summary_df.copy()
-        summary_df_display["Select"] = False
+        # Create a selection column
+        summary_display = summary.copy()
+        summary_display["Select"] = False
 
         selected = st.data_editor(
-            summary_df_display,
-            use_container_width=True,
+            summary_display,
+            use_container_width=True,   # << FULL WIDTH TABLE
             hide_index=True,
-            height=600,
+            height=650,                 # << TALLER CENTRAL SECTION
             column_config={
                 "Select": st.column_config.CheckboxColumn(required=False)
             }
         )
 
-        # Get selected rows
         selected_rows = selected[selected["Select"] == True]
 
         if len(selected_rows) == 1:
-            st.markdown("### 📈 Full History for Selected Material")
+            st.markdown("---")
+            st.subheader("🔍 Full History for Selected Material")
 
             mat = selected_rows.iloc[0]["SapCode"]
             wh = selected_rows.iloc[0]["Warehouse"]
 
-            history = filtered[(filtered["SapCode"] == mat) &
-                               (filtered["Warehouse"] == wh)].sort_values("Period")
+            hist = (
+                filtered[(filtered["SapCode"] == mat) &
+                         (filtered["Warehouse"] == wh)]
+                .sort_values("Period")
+            )
 
-            st.write("#### Complete History (Table)")
-            st.dataframe(history, use_container_width=True)
+            st.write("### 📄 Full History Table")
+            st.dataframe(hist, use_container_width=True, height=500)
 
-            st.write("#### Quantity Over Time")
+            st.write("### 📊 Quantity Over Time")
+
             chart = (
-                alt.Chart(history)
+                alt.Chart(hist)
                 .mark_line(point=True)
                 .encode(
-                    x="Period:T",
-                    y=qty_col + ":Q",
+                    x=alt.X("Period:T", title="Period"),
+                    y=alt.Y(f"{qty_col}:Q", title="Quantity"),
                     tooltip=["Period", qty_col]
                 )
-                .properties(height=400)
+                .properties(height=500, width=1200)   # << MUCH LARGER CHART
             )
+
             st.altair_chart(chart, use_container_width=True)
