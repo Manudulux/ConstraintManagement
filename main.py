@@ -1,20 +1,8 @@
 
 # ===========================================================
 #  main.py — Supply Chain Toolkit (Multi‑module Streamlit App)
-#
-#  Modules:
-#   - Home (ALL uploads live here)
-#   - Non-Productive Inventory Management (NPI)
-#   - Planning Overview (TW Forecast Projections)
-#   - Storage Capacity Management (placeholder)
-#   - Transportation Management (placeholder)
-#
-#  Key Requirements implemented:
-#   ✔ Uploaders ONLY on Home (inventory & forecast)
-#   ✔ Modules read files from session-state or fall back to local CSVs
-#   ✔ NPI: Last Zero Date = MOST RECENT date with qty == 0
-#   ✔ Planning Overview: Starting stock editable in sidebar; weekly projection
-#   ✔ Robust CSV reading + numeric/date cleaning + Excel download fallback
+#  (Updated: Planning Overview baseline uses most recent PhysicalStock
+#   from inventory when the relevant week has no physical stock.)
 # ===========================================================
 
 import streamlit as st
@@ -24,21 +12,20 @@ import altair as alt
 import re
 from io import BytesIO
 
-# ===========================================================
+# -----------------------------------------------------------
 # PAGE CONFIG
-# ===========================================================
+# -----------------------------------------------------------
 st.set_page_config(
     page_title="Inventory & Supply Chain Toolkit",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ===========================================================
+# -----------------------------------------------------------
 # SHARED HELPERS
-# ===========================================================
+# -----------------------------------------------------------
 
 def read_csv_robust(upload_or_path):
-    """Try multiple separator + encoding combos for resilient CSV reading."""
     attempts = [
         dict(sep=",", encoding=None),
         dict(sep=";", encoding=None),
@@ -62,7 +49,6 @@ def df_to_csv_bytes(df):
 
 
 def df_to_excel_bytes(df, sheet_name="Sheet1"):
-    """Excel engine fallback: openpyxl → xlsxwriter → None."""
     try:
         buf = BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as w:
@@ -80,17 +66,14 @@ def df_to_excel_bytes(df, sheet_name="Sheet1"):
     except Exception:
         return None
 
-
-# ===========================================================
+# -----------------------------------------------------------
 # SESSION-STATE FILE ROUTING (HOME → MODULES)
-# ===========================================================
-
+# -----------------------------------------------------------
 INVENTORY_DEFAULT = "StockHistorySample.csv"
 FORECAST_DEFAULT  = "TWforecasts.csv"
 
 
 def get_inventory_df_from_state():
-    """Return inventory DataFrame from session or local default path."""
     if st.session_state.get("inventory_file_bytes"):
         bio = BytesIO(st.session_state["inventory_file_bytes"])
         df = read_csv_robust(bio)
@@ -106,7 +89,6 @@ def get_inventory_df_from_state():
 
 
 def get_forecast_df_from_state():
-    """Return forecast DataFrame from session or local default path."""
     if st.session_state.get("forecast_file_bytes"):
         bio = BytesIO(st.session_state["forecast_file_bytes"])
         df = read_csv_robust(bio)
@@ -120,13 +102,11 @@ def get_forecast_df_from_state():
     st.session_state["forecast_source_caption"] = src
     return df
 
-
-# ===========================================================
+# -----------------------------------------------------------
 # MODULE 1 — NON-PRODUCTIVE INVENTORY MANAGEMENT (NPI)
-# ===========================================================
+# -----------------------------------------------------------
 
 def run_npi_app():
-    # ---------- NORMALIZATION ----------
     COLUMN_ALIASES = {
         "quality inspection qty": "QualityInspectionQty",
         "qualityinspectionqty": "QualityInspectionQty",
@@ -148,17 +128,14 @@ def run_npi_app():
         df.columns = [c.strip() for c in df.columns]
         return df
 
-    # ---------- LOAD DATA FROM STATE ----------
     df = get_inventory_df_from_state()
     if df.empty:
         return
     df = normalize_columns(df)
 
-    # Dates
     if "Period" in df.columns:
         df["Period"] = pd.to_datetime(df["Period"], errors="coerce", infer_datetime_format=True)
 
-    # Numerics
     for col in ["QualityInspectionQty","BlockedStockQty","ReturnStockQty","OveragedTireQty"]:
         if col in df.columns:
             df[col] = (
@@ -169,20 +146,17 @@ def run_npi_app():
             )
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-    # Caption
     if "Period" in df.columns:
         pmin, pmax = df["Period"].min(), df["Period"].max()
         src = st.session_state.get("inventory_source_caption", "")
         st.caption(f"📂 Inventory source: {src} | Rows: {len(df):,} | Period range: {pmin.date()} → {pmax.date()}")
     else:
-        st.caption(f"📂 Inventory source: {st.session_state.get('inventory_source_caption', '')} | Rows: {len(df):,}")
+        st.caption(f"📂 Inventory source: {st.session_state.get('inventory_source_caption','')} | Rows: {len(df):,}")
 
-    # ---------- FIX: MOST RECENT ZERO DATE ----------
     def compute_last_zero_date(hist_df, qty_col):
         z = hist_df.loc[hist_df[qty_col] == 0, "Period"]
         return z.max() if not z.empty else None
 
-    # ---------- SUMMARY ----------
     def build_summary(dfin, qty_col):
         if "Period" not in dfin.columns: return pd.DataFrame()
         latest = dfin["Period"].max()
@@ -213,7 +187,6 @@ def run_npi_app():
             })
         return pd.DataFrame(rows).sort_values("Quantity", ascending=False)
 
-    # ---------- STYLING ----------
     def style_days_since(df, warn, high, crit):
         def style_val(v):
             if v >= crit: return "background-color:#ffd6d6;"
@@ -227,7 +200,6 @@ def run_npi_app():
                   .set_properties(subset=["Quantity"], **{"font-weight":"600"})
                   .set_table_styles([{"selector":"th","props":[("font-weight","600"),("background","#f7f7f7")]}]))
 
-    # ---------- SIDEBAR (filters & thresholds only — NO uploaders here) ----------
     st.sidebar.subheader("📊 Filters (NPI)")
     def _opts(s):
         return sorted(pd.Series(s).dropna().unique().tolist())
@@ -255,7 +227,6 @@ def run_npi_app():
     if ab_sel:        data = data[data["AB"].isin(ab_sel)]
     if brand_sel:     data = data[data["Brand"].isin(brand_sel)]
 
-    # ---------- UI ----------
     st.title("Non-Productive Inventory Management")
 
     tab_o, tab_qi, tab_bs, tab_rs, tab_oa = st.tabs([
@@ -283,7 +254,8 @@ def run_npi_app():
         st.subheader("🏭 Totals by Plant (latest period)")
         if "Period" in data.columns:
             latest = data["Period"].max()
-            byp = (data[data["Period"]==latest].groupby("Warehouse")[get_qty_cols(data)].sum().reset_index()) if get_qty_cols(data) else pd.DataFrame()
+            qcols = get_qty_cols(data)
+            byp = (data[data["Period"]==latest].groupby("Warehouse")[qcols].sum().reset_index()) if qcols else pd.DataFrame()
             if not byp.empty:
                 st.dataframe(byp, use_container_width=True)
 
@@ -319,63 +291,87 @@ def run_npi_app():
     metric_tab(tab_rs, "ReturnStockQty",       "Return Stock Qty")
     metric_tab(tab_oa, "OveragedTireQty",      "Overaged Inventory")
 
-
-# ===========================================================
+# -----------------------------------------------------------
 # MODULE 2 — PLANNING OVERVIEW (TW Forecast Projections)
-# ===========================================================
+# -----------------------------------------------------------
 
 def run_planning_overview():
     st.title("Planning Overview — Weekly Inventory Projection")
 
-    # ---------- LOAD FORECAST FROM STATE ----------
-    df = get_forecast_df_from_state()
-    if df.empty:
+    # ---------- LOAD FORECAST ----------
+    fdf = get_forecast_df_from_state()
+    if fdf.empty:
         return
 
-    # Normalize columns
-    df.columns = [c.strip() for c in df.columns]
+    # Normalize forecast columns
+    fdf.columns = [c.strip() for c in fdf.columns]
     rename_map = {}
-    for c in df.columns:
+    for c in fdf.columns:
         low = c.lower().replace(" ", "").replace("_", "")
         if low == "warehouse": rename_map[c] = "Warehouse"
         elif low == "loadingtype": rename_map[c] = "Loadingtype"
-        elif low in ("selecteddimension", "selecteddimension,"):
-            rename_map[c] = "SelectedDimension"
+        elif low in ("selecteddimension","selecteddimension,"): rename_map[c] = "SelectedDimension"
         elif low == "periodyear": rename_map[c] = "Period_Year"
         elif low == "week": rename_map[c] = "Week"
-        elif low in ("transferquantity", "transferqty", "transferquantityamount"):
-            rename_map[c] = "Transfer_Quantity"
+        elif low in ("transferquantity","transferqty","transferquantityamount"): rename_map[c] = "Transfer_Quantity"
     if rename_map:
-        df = df.rename(columns=rename_map)
+        fdf = fdf.rename(columns=rename_map)
 
-    # Clean numbers
-    if "Transfer_Quantity" in df.columns:
-        df["Transfer_Quantity"] = (df["Transfer_Quantity"].astype(str)
-                                     .str.replace(" ", "", regex=False)
-                                     .str.replace(",", "", regex=False)
-                                     .str.replace('"', "", regex=False)
+    if "Transfer_Quantity" in fdf.columns:
+        fdf["Transfer_Quantity"] = (fdf["Transfer_Quantity"].astype(str)
+                                     .str.replace(" ","", regex=False)
+                                     .str.replace(",","", regex=False)
+                                     .str.replace('"','', regex=False)
                                      .str.strip())
-        df["Transfer_Quantity"] = pd.to_numeric(df["Transfer_Quantity"], errors="coerce").fillna(0)
+        fdf["Transfer_Quantity"] = pd.to_numeric(fdf["Transfer_Quantity"], errors="coerce").fillna(0)
 
-    # Week number
-    if "Week" in df.columns:
-        df["Week"] = df["Week"].astype(str).str.strip()
-        df["Week_num"] = df["Week"].apply(lambda s: int(re.sub(r"[^\d]", "", s)) if re.search(r"\d+", s) else None)
+    if "Week" in fdf.columns:
+        fdf["Week"] = fdf["Week"].astype(str).str.strip()
+        fdf["Week_num"] = fdf["Week"].apply(lambda s: int(re.sub(r"[^\d]","", s)) if re.search(r"\d+", s) else None)
 
-    if "SelectedDimension" in df.columns:
-        df["SelectedDimension"] = df["SelectedDimension"].astype(str).str.strip().str.title()
+    if "SelectedDimension" in fdf.columns:
+        fdf["SelectedDimension"] = fdf["SelectedDimension"].astype(str).str.strip().str.title()
 
-    # Caption
     src = st.session_state.get("forecast_source_caption", "")
-    st.caption(f"📂 Forecast source: {src} | Rows: {len(df):,}")
+    st.caption(f"📂 Forecast source: {src} | Rows: {len(fdf):,}")
 
-    # ---------- Sidebar controls (NO uploaders here) ----------
-    st.sidebar.subheader("🏁 Starting Physical Stock (by plant)")
-    plants = sorted(df["Warehouse"].dropna().astype(str).unique())
+    # ---------- LOAD INVENTORY (to get PhysicalStock baselines) ----------
+    idf = get_inventory_df_from_state()
+    inv_note = st.session_state.get("inventory_source_caption", "")
+
+    # Normalize inventory
+    idf.columns = [c.strip() for c in idf.columns]
+    # We expect at least: Warehouse, Period, PhysicalStock (plus optional more)
+    # Parse Period
+    if "Period" in idf.columns:
+        idf["Period"] = pd.to_datetime(idf["Period"], errors="coerce", infer_datetime_format=True)
+    # Parse PhysicalStock
+    if "PhysicalStock" in idf.columns:
+        idf["PhysicalStock"] = (idf["PhysicalStock"].astype(str)
+                                  .str.replace(" ","", regex=False)
+                                  .str.replace(",","", regex=False)
+                                  .str.strip())
+        idf["PhysicalStock"] = pd.to_numeric(idf["PhysicalStock"], errors="coerce").fillna(0)
+
+    # Build weekly physical stock by plant from inventory (ISO year/week)
+    inv_weekly = pd.DataFrame()
+    if {"Warehouse","Period","PhysicalStock"}.issubset(idf.columns):
+        iso = idf["Period"].dt.isocalendar()
+        idf["ISO_Year"] = iso.year
+        idf["ISO_Week"] = iso.week
+        # Sum physical stock across materials per plant per ISO week
+        inv_weekly = (idf.groupby(["Warehouse","ISO_Year","ISO_Week"], dropna=True)["PhysicalStock"]
+                        .sum()
+                        .reset_index())
+        inv_weekly["YearWeekIdx"] = inv_weekly["ISO_Year"]*100 + inv_weekly["ISO_Week"]
+
+    # ---------- Sidebar controls (NO uploaders) ----------
+    st.sidebar.subheader("🏁 Starting Physical Stock (fallback per plant)")
+    plants = sorted(fdf["Warehouse"].dropna().astype(str).unique())
     if "start_stock_df" not in st.session_state or        set(st.session_state["start_stock_df"].get("Warehouse", [])) != set(plants):
         st.session_state["start_stock_df"] = pd.DataFrame({"Warehouse": plants, "Starting_PhysicalStock": 0})
 
-    st.sidebar.caption("Adjust opening stock per plant.")
+    st.sidebar.caption("Used only if no inventory baseline is found for a plant prior to the first forecast week.")
     st.session_state["start_stock_df"] = st.sidebar.data_editor(
         st.session_state["start_stock_df"], hide_index=True, use_container_width=True, num_rows="dynamic"
     )
@@ -383,14 +379,15 @@ def run_planning_overview():
     st.sidebar.subheader("🔎 View Filters")
     view_plants = st.sidebar.multiselect("Plants to display", plants, default=plants)
 
-    # ---------- Projection ----------
-    def build_projection(fdf: pd.DataFrame, sdf: pd.DataFrame):
+    # ---------- Build Projection with baseline rule ----------
+    def build_projection(fdf: pd.DataFrame, inv_weekly: pd.DataFrame, start_df: pd.DataFrame):
+        # Aggregate forecast by Warehouse/Year/Week and split details
         group_cols = ["Warehouse","Period_Year","Week_num","Loadingtype","SelectedDimension"]
         agg = fdf.groupby(group_cols)["Transfer_Quantity"].sum().reset_index()
         pivot = (agg.pivot_table(index=["Warehouse","Period_Year","Week_num"],
                                  columns=["Loadingtype","SelectedDimension"],
                                  values="Transfer_Quantity", aggfunc="sum").fillna(0)).reset_index()
-        # Flatten cols
+        # Flatten
         pivot.columns = [f"{a}_{b}" if isinstance((a,b), tuple) and b != '' else (a if not isinstance((a,b), tuple) else a)
                          for (a,b) in [(c if isinstance(c, tuple) else (c,'')) for c in pivot.columns]]
         # Ensure detail cols
@@ -402,23 +399,47 @@ def run_planning_overview():
         pivot["Load_Total"]   = pivot["Load_Loose"] + pivot["Load_Pallet"] + pivot["Load_Mixed"]
         pivot["Unload_Total"] = pivot["Unload_Loose"] + pivot["Unload_Pallet"] + pivot["Unload_Mixed"]
 
+        # Sort
         pivot = pivot.sort_values(["Warehouse","Period_Year","Week_num"]) 
-        start_map = dict(zip(sdf["Warehouse"], pd.to_numeric(sdf["Starting_PhysicalStock"], errors="coerce").fillna(0)))
+        pivot["YearWeekIdx"] = pivot["Period_Year"]*100 + pivot["Week_num"].astype(int)
+
+        # Starting stock fallback map
+        start_map = dict(zip(start_df["Warehouse"], pd.to_numeric(start_df["Starting_PhysicalStock"], errors="coerce").fillna(0)))
+
         results = []
         for wh, grp in pivot.groupby("Warehouse", sort=False):
             grp = grp.sort_values(["Period_Year","Week_num"]).copy()
-            start = float(start_map.get(wh, 0))
-            proj = []
-            prev = start
+            # Determine baseline for FIRST forecast week for this plant
+            first_idx = int(grp.iloc[0]["YearWeekIdx"]) if len(grp)>0 else None
+            baseline = None
+            if not inv_weekly.empty and wh in inv_weekly["Warehouse"].unique():
+                sub = inv_weekly[inv_weekly["Warehouse"]==wh].copy()
+                # Prefer exact match for the first week; else use most recent prior week value
+                exact = sub[sub["YearWeekIdx"]==first_idx]
+                if not exact.empty:
+                    baseline = float(exact["PhysicalStock"].iloc[0])
+                else:
+                    prior = sub[sub["YearWeekIdx"]<=first_idx].sort_values("YearWeekIdx")
+                    if not prior.empty:
+                        baseline = float(prior.iloc[-1]["PhysicalStock"])  # most recent available
+            if baseline is None:
+                baseline = float(start_map.get(wh, 0))
+
+            # Cumulative week-by-week projection from that baseline
+            proj_vals = []
+            prev = baseline
             for _, r in grp.iterrows():
-                end = prev + r["Load_Total"] - r["Unload_Total"]
-                proj.append(end)
+                end = prev + float(r["Load_Total"]) - float(r["Unload_Total"]) 
+                proj_vals.append(end)
                 prev = end
+
             grp["Starting_Stock"] = None
-            if len(grp) > 0:
-                grp.loc[grp.index[0], "Starting_Stock"] = start
-            grp["Projected_Stock"] = proj
+            if len(grp)>0:
+                grp.loc[grp.index[0], "Starting_Stock"] = baseline
+            grp["Projected_Stock"] = proj_vals
+
             results.append(grp)
+
         dfp = pd.concat(results, ignore_index=True) if results else pivot.copy()
         dfp["YearWeek"] = dfp["Period_Year"].astype(str) + "-W" + dfp["Week_num"].astype(int).astype(str).str.zfill(2)
         cols = [
@@ -430,10 +451,23 @@ def run_planning_overview():
         existing = [c for c in cols if c in dfp.columns]
         return dfp[existing].copy()
 
-    proj = build_projection(df, st.session_state["start_stock_df"]) 
+    proj = build_projection(fdf, inv_weekly, st.session_state["start_stock_df"]) 
 
     # ---------- DISPLAY ----------
+    if inv_weekly.empty:
+        st.info("No PhysicalStock found in the inventory file — projections start from the manual starting stock per plant.")
+    else:
+        st.caption(f"Inventory baseline source: {inv_note}")
+
     st.subheader("📄 Inventory Projection (week by week)")
+    view_plants = st.sidebar.session_state.get('planning_view_plants')
+    # ensure we keep the chosen filter; if not set, default to all plants
+    if view_plants is None:
+        view_plants = sorted(fdf["Warehouse"].dropna().unique())
+        st.sidebar.session_state['planning_view_plants'] = view_plants
+    # Use current sidebar selection (already set above as view_plants variable earlier)
+    view_df = proj[proj["Warehouse"].isin(st.sidebar.session_state['planning_view_plants'])].copy() if st.sidebar.session_state['planning_view_plants'] else proj.copy()
+    # But in UI we show based on latest selection variable created earlier
     view_df = proj[proj["Warehouse"].isin(view_plants)].copy() if view_plants else proj.copy()
     view_df = view_df.sort_values(["Warehouse","Period_Year","Week_num"])
     st.dataframe(view_df, use_container_width=True, height=450)
@@ -476,10 +510,9 @@ def run_planning_overview():
         st.altair_chart(load_bar, use_container_width=True)
         st.altair_chart(unload_bar, use_container_width=True)
 
-
-# ===========================================================
-# PLACEHOLDERS (no extra sidebar content)
-# ===========================================================
+# -----------------------------------------------------------
+# PLACEHOLDERS
+# -----------------------------------------------------------
 
 def run_storage_capacity():
     st.title("Storage Capacity Management")
@@ -490,21 +523,19 @@ def run_transport_mgmt():
     st.title("Transportation Management")
     st.info("This module will be developed in a future release.")
 
-
-# ===========================================================
+# -----------------------------------------------------------
 # HOME (ALL UPLOADERS LIVE HERE)
-# ===========================================================
+# -----------------------------------------------------------
 
 def run_home():
     st.title("Welcome to the Supply Chain Management Dashboard")
     st.subheader("Upload data below, then use the sidebar to open a module.")
 
-    # Two columns for two uploaders
     c1, c2 = st.columns(2)
 
     with c1:
         st.markdown("### 📦 Inventory file for NPI")
-        inv_file = st.file_uploader("Upload inventory CSV (used by the NPI module)", type="csv", key="home_inv")
+        inv_file = st.file_uploader("Upload inventory CSV (used by the NPI & Planning Overview baselines)", type="csv", key="home_inv")
         if inv_file is not None:
             st.session_state["inventory_file_bytes"] = inv_file.getvalue()
             st.session_state["inventory_file_name"]  = inv_file.name
@@ -543,16 +574,15 @@ def run_home():
         """
         ### Modules
         - **Non-Productive Inventory Management** — Explore non-productive stock, with **Last Zero Date = most recent zero**.
-        - **Planning Overview** — Build week-by-week projections from loads/unloads + starting stock.
+        - **Planning Overview** — Week-by-week projections. If a week has no PhysicalStock, the baseline uses the **most recent available** PhysicalStock from the inventory file.
         - **Storage Capacity Management** *(coming soon)*
         - **Transportation Management** *(coming soon)*
         """
     )
 
-
-# ===========================================================
-# NAVIGATION (Sidebar menu)
-# ===========================================================
+# -----------------------------------------------------------
+# NAVIGATION
+# -----------------------------------------------------------
 
 st.sidebar.title("📂 Application Sections")
 mode = st.sidebar.radio(
