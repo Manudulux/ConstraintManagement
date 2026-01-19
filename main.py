@@ -5,7 +5,7 @@ import os
 import altair as alt
 
 # -----------------------------------------------------------
-# PAGE CONFIG: MAXIMIZE CENTRAL SECTION
+# PAGE CONFIG
 # -----------------------------------------------------------
 st.set_page_config(
     page_title="Inventory Quality Dashboard",
@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------
-# LOAD DATA WITH NUMERIC CLEANING
+# LOAD DATA WITH CLEANING
 # -----------------------------------------------------------
 def load_data(upload):
     if upload is None:
@@ -27,26 +27,31 @@ def load_data(upload):
     else:
         df = pd.read_csv(upload)
 
-    # Convert Period column
     df["Period"] = pd.to_datetime(df["Period"], errors="coerce")
 
-    # Convert quality columns to numeric
-    qty_cols = ["QualityInspectionQty", "BlockedStockQty", "ReturnStockQty"]
+    # Columns to numeric
+    qty_cols = [
+        "QualityInspectionQty",
+        "BlockedStockQty",
+        "ReturnStockQty",
+        "OveragedTireQty",
+    ]
 
     for col in qty_cols:
-        df[col] = (
-            df[col]
-            .astype(str)
-            .str.replace(",", "", regex=False)
-            .str.strip()
-        )
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        if col in df.columns:
+            df[col] = (
+                df[col]
+                .astype(str)
+                .str.replace(",", "", regex=False)
+                .str.strip()
+            )
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
     return df
 
 
 # -----------------------------------------------------------
-# HELPER: LAST ZERO DATE
+# LAST ZERO DATE HELPER
 # -----------------------------------------------------------
 def compute_last_zero(df, col):
     df = df.sort_values("Period")
@@ -55,21 +60,21 @@ def compute_last_zero(df, col):
 
 
 # -----------------------------------------------------------
-# BUILD SUMMARY (latest period only)
+# SUMMARY BUILDER (Latest Period Only)
 # -----------------------------------------------------------
 def build_summary(df, qty_column):
     latest_period = df["Period"].max()
     oldest_period = df["Period"].min()
 
-    latest = df[df["Period"] == latest_period]
-
-    if latest.empty:
+    if latest_period is None:
         return pd.DataFrame(columns=[
             "SapCode", "MaterialDescription", "Warehouse", "Brand",
             "AB", "Hier2", "Hier4", "Quantity", "Last Zero Date", "Days Since Zero"
         ])
 
-    # Keep only materials > 0 in the latest period
+    latest = df[df["Period"] == latest_period]
+
+    # Only > 0 values
     latest = latest[latest[qty_column] > 0]
 
     if latest.empty:
@@ -81,7 +86,6 @@ def build_summary(df, qty_column):
     results = []
 
     for (mat, wh), _ in latest.groupby(["SapCode", "Warehouse"]):
-
         hist = (
             df[(df["SapCode"] == mat) &
                (df["Warehouse"] == wh)]
@@ -90,7 +94,6 @@ def build_summary(df, qty_column):
 
         last_zero = compute_last_zero(hist, qty_column)
 
-        # NEW LOGIC: if no zero found → use oldest period
         if last_zero is None:
             last_zero_date = oldest_period
             days_since_zero = (latest_period - oldest_period).days
@@ -124,7 +127,7 @@ def build_summary(df, qty_column):
 # -----------------------------------------------------------
 # APP TITLE
 # -----------------------------------------------------------
-st.title("📦 Inventory Quality / Blocked / Return Stock Analyzer")
+st.title("📦 Inventory Quality / Blocked / Return / Overaged Analyzer")
 
 uploaded_file = st.file_uploader("Upload CSV (optional)", type="csv")
 df = load_data(uploaded_file)
@@ -149,19 +152,24 @@ for col, selected in filters.items():
 
 
 # -----------------------------------------------------------
-# TABS
+# TABS (4 TOTAL)
 # -----------------------------------------------------------
 tabs = st.tabs([
     "Quality Inspection Qty",
     "Blocked Stock Qty",
-    "Return Stock Qty"
+    "Return Stock Qty",
+    "Overaged Inventory",
 ])
 
-qty_cols = ["QualityInspectionQty", "BlockedStockQty", "ReturnStockQty"]
-
+qty_cols = [
+    "QualityInspectionQty",
+    "BlockedStockQty",
+    "ReturnStockQty",
+    "OveragedTireQty",
+]
 
 # -----------------------------------------------------------
-# RENDER EACH TAB
+# DISPLAY LOGIC PER TAB
 # -----------------------------------------------------------
 for tab, qty_col in zip(tabs, qty_cols):
     with tab:
@@ -173,7 +181,6 @@ for tab, qty_col in zip(tabs, qty_cols):
             st.warning("No data available for the selected filters.")
             continue
 
-        # Add selection checkbox
         df_display = summary_df.copy()
         df_display["Select"] = False
 
