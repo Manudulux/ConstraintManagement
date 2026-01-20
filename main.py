@@ -256,6 +256,10 @@ def run_npi_app():
             latest = data["Period"].max()
             qcols = get_qty_cols(data)
             byp = (data[data["Period"]==latest].groupby("Warehouse")[qcols].sum().reset_index()) if qcols else pd.DataFrame()
+            # Append PhysicalStock to the table (do not add it to charts)
+            if "PhysicalStock" in data.columns:
+                ps = (data[data["Period"]==latest].groupby("Warehouse")["PhysicalStock"].sum().reset_index())
+                byp = ps.merge(byp, on="Warehouse", how="left") if not byp.empty else ps
             if not byp.empty:
                 st.dataframe(byp, use_container_width=True)
 
