@@ -1,10 +1,3 @@
-
-# ===========================================================
-#  main.py — Supply Chain Toolkit (Multi‑module Streamlit App)
-#  (Hotfix: removed incorrect `st.sidebar.session_state` usage in
-#   Planning Overview; now uses the multiselect value directly.)
-# ===========================================================
-
 import streamlit as st
 import pandas as pd
 import os
@@ -116,7 +109,9 @@ def run_npi_app():
         "returnstockqty": "ReturnStockQty",
         "overaged": "OveragedTireQty",
         "overaged tire qty": "OveragedTireQty",
-    }
+    "physicalstock": "PhysicalStock",
+    "physical stock": "PhysicalStock",
+}
 
     def normalize_columns(df):
         mapping = {}
@@ -136,7 +131,7 @@ def run_npi_app():
     if "Period" in df.columns:
         df["Period"] = pd.to_datetime(df["Period"], errors="coerce", infer_datetime_format=True)
 
-    for col in ["QualityInspectionQty","BlockedStockQty","ReturnStockQty","OveragedTireQty"]:
+    for col in ["QualityInspectionQty","BlockedStockQty","ReturnStockQty","OveragedTireQty","PhysicalStock"]:
         if col in df.columns:
             df[col] = (
                 df[col].astype(str)
@@ -256,10 +251,13 @@ def run_npi_app():
             latest = data["Period"].max()
             qcols = get_qty_cols(data)
             byp = (data[data["Period"]==latest].groupby("Warehouse")[qcols].sum().reset_index()) if qcols else pd.DataFrame()
-            # Append PhysicalStock to the table (do not add it to charts)
+            # Add PhysicalStock using the same aggregation method as the other quantities (table only)
             if "PhysicalStock" in data.columns:
-                ps = (data[data["Period"]==latest].groupby("Warehouse")["PhysicalStock"].sum().reset_index())
-                byp = ps.merge(byp, on="Warehouse", how="left") if not byp.empty else ps
+                ps = (data[data["Period"]==latest]
+                      .groupby("Warehouse")["PhysicalStock"]
+                      .sum()
+                      .reset_index())
+                byp = byp.merge(ps, on="Warehouse", how="left") if not byp.empty else ps
             if not byp.empty:
                 st.dataframe(byp, use_container_width=True)
 
