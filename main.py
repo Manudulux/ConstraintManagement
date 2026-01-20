@@ -418,7 +418,7 @@ def run_planning_overview():
             proj_vals = []
             prev = baseline
             for _, r in grp.iterrows():
-                end = prev + float(r["Load_Total"]) - float(r["Unload_Total"]) 
+                end = prev - float(r["Load_Total"]) + float(r["Unload_Total"]) 
                 proj_vals.append(end)
                 prev = end
 
