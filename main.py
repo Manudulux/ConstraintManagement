@@ -29,16 +29,12 @@ def read_csv_robust(upload_or_path):
         try:
             if hasattr(upload_or_path, "seek"):
                 upload_or_path.seek(0)
-            return pd.read_csv(upload_or_path, **max(opts)) # Note: Using dict spread in actual call
+            return pd.read_csv(upload_or_path, **opts)
         except Exception:
             pass
     if hasattr(upload_or_path, "seek"):
         upload_or_path.seek(0)
-    # Final fallback
-    try:
-        return pd.read_csv(upload_or_path, sep=None, engine='python')
-    except:
-        return pd.read_csv(upload_or_path)
+    return pd.read_csv(upload_or_path)
 
 
 def df_to_csv_bytes(df):
@@ -68,8 +64,8 @@ def df_to_excel_bytes(df, sheet_name="Sheet1"):
 # -----------------------------------------------------------
 INVENTORY_DEFAULT = "StockHistorySample.csv"
 FORECAST_DEFAULT  = "TWforecasts.csv"
-BDD400_000_DEFAULT = "000BDD400.csv"
-BDD400_030_DEFAULT = "0030BDD400.csv"
+BDD_000_DEFAULT   = "000BDD400.csv"
+BDD_030_DEFAULT   = "0030BDD400.csv"
 
 
 def get_inventory_df_from_state():
@@ -525,23 +521,23 @@ def run_home():
         if st.button("Clear inventory upload"):
             for k in ["inventory_file_bytes","inventory_file_name","inventory_source_caption"]:
                 st.session_state.pop(k, None)
-            st.rerun()
+            st.experimental_rerun()
 
         st.markdown("---")
         st.markdown("### 📄 File: 000BDD400.csv")
-        bdd000_file = st.file_uploader("Upload 000BDD400.csv", type="csv", key="home_bdd000")
+        bdd000_file = st.file_uploader("Upload 000BDD400 CSV", type="csv", key="home_bdd000")
         if bdd000_file is not None:
             st.session_state["bdd000_file_bytes"] = bdd000_file.getvalue()
             st.session_state["bdd000_file_name"] = bdd000_file.name
             st.success(f"File loaded: {bdd000_file.name}")
         if st.session_state.get("bdd000_file_name"):
             st.caption(f"Current source: {st.session_state['bdd000_file_name']}")
-        elif os.path.exists(BDD400_000_DEFAULT):
-            st.caption(f"Using default: {BDD400_000_DEFAULT}")
+        elif os.path.exists(BDD_000_DEFAULT):
+            st.caption(f"Using default: {BDD_000_DEFAULT}")
         if st.button("Clear 000BDD400 upload"):
-            for k in ["bdd000_file_bytes","bdd000_file_name"]:
+            for k in ["bdd000_file_bytes", "bdd000_file_name"]:
                 st.session_state.pop(k, None)
-            st.rerun()
+            st.experimental_rerun()
 
     with c2:
         st.markdown("### 📊 TW Forecast file for Planning Overview")
@@ -559,23 +555,23 @@ def run_home():
         if st.button("Clear forecast upload"):
             for k in ["forecast_file_bytes","forecast_file_name","forecast_source_caption"]:
                 st.session_state.pop(k, None)
-            st.rerun()
+            st.experimental_rerun()
 
         st.markdown("---")
         st.markdown("### 📄 File: 0030BDD400.csv")
-        bdd030_file = st.file_uploader("Upload 0030BDD400.csv", type="csv", key="home_bdd030")
+        bdd030_file = st.file_uploader("Upload 0030BDD400 CSV", type="csv", key="home_bdd030")
         if bdd030_file is not None:
             st.session_state["bdd030_file_bytes"] = bdd030_file.getvalue()
             st.session_state["bdd030_file_name"] = bdd030_file.name
             st.success(f"File loaded: {bdd030_file.name}")
         if st.session_state.get("bdd030_file_name"):
             st.caption(f"Current source: {st.session_state['bdd030_file_name']}")
-        elif os.path.exists(BDD400_030_DEFAULT):
-            st.caption(f"Using default: {BDD400_030_DEFAULT}")
+        elif os.path.exists(BDD_030_DEFAULT):
+            st.caption(f"Using default: {BDD_030_DEFAULT}")
         if st.button("Clear 0030BDD400 upload"):
-            for k in ["bdd030_file_bytes","bdd030_file_name"]:
+            for k in ["bdd030_file_bytes", "bdd030_file_name"]:
                 st.session_state.pop(k, None)
-            st.rerun()
+            st.experimental_rerun()
 
     st.markdown("---")
     st.markdown(
