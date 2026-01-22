@@ -511,8 +511,6 @@ def run_planning_overview_bdd():
     df.columns = [c.strip() for c in df.columns]
     
     # Look for "Closing Stock" column (flexible search)
-    # The prompt specifically asks to use the "closingstock information".
-    # We will look for typical column names.
     stock_col = None
     for c in df.columns:
         clean = c.lower().replace(" ", "").replace("_", "")
@@ -566,11 +564,14 @@ def run_planning_overview_bdd():
         view_df = view_df[view_df[wh_col].isin(view_plants)]
     
     # Construct a YearWeek column for sorting/graphing if possible
+    # FIX: Ensure we only sort by columns that actually exist (handling case where wh_col might be None)
     if year_col and week_col:
         view_df["YearWeek"] = view_df[year_col].astype(str) + "-W" + view_df[week_col].astype(str).str.zfill(2)
-        view_df = view_df.sort_values([wh_col, year_col, week_col])
+        sort_keys = [c for c in [wh_col, year_col, week_col] if c]
+        view_df = view_df.sort_values(sort_keys)
     elif week_col:
-        view_df = view_df.sort_values([wh_col, week_col])
+        sort_keys = [c for c in [wh_col, week_col] if c]
+        view_df = view_df.sort_values(sort_keys)
         view_df["YearWeek"] = view_df[week_col].astype(str)
 
     st.subheader("📄 Inventory Projection (Closing Stock)")
