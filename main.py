@@ -29,12 +29,16 @@ def read_csv_robust(upload_or_path):
         try:
             if hasattr(upload_or_path, "seek"):
                 upload_or_path.seek(0)
-            return pd.read_csv(upload_or_path, **opts)
+            return pd.read_csv(upload_or_path, **max(opts)) # Note: Using dict spread in actual call
         except Exception:
             pass
     if hasattr(upload_or_path, "seek"):
         upload_or_path.seek(0)
-    return pd.read_csv(upload_or_path)
+    # Final fallback
+    try:
+        return pd.read_csv(upload_or_path, sep=None, engine='python')
+    except:
+        return pd.read_csv(upload_or_path)
 
 
 def df_to_csv_bytes(df):
@@ -64,6 +68,8 @@ def df_to_excel_bytes(df, sheet_name="Sheet1"):
 # -----------------------------------------------------------
 INVENTORY_DEFAULT = "StockHistorySample.csv"
 FORECAST_DEFAULT  = "TWforecasts.csv"
+BDD400_000_DEFAULT = "000BDD400.csv"
+BDD400_030_DEFAULT = "0030BDD400.csv"
 
 
 def get_inventory_df_from_state():
@@ -109,9 +115,9 @@ def run_npi_app():
         "returnstockqty": "ReturnStockQty",
         "overaged": "OveragedTireQty",
         "overaged tire qty": "OveragedTireQty",
-    "physicalstock": "PhysicalStock",
-    "physical stock": "PhysicalStock",
-}
+        "physicalstock": "PhysicalStock",
+        "physical stock": "PhysicalStock",
+    }
 
     def normalize_columns(df):
         mapping = {}
@@ -251,7 +257,6 @@ def run_npi_app():
             latest = data["Period"].max()
             qcols = get_qty_cols(data)
             byp = (data[data["Period"]==latest].groupby("Warehouse")[qcols].sum().reset_index()) if qcols else pd.DataFrame()
-            # Add PhysicalStock using the same aggregation method as the other quantities (table only)
             if "PhysicalStock" in data.columns:
                 ps = (data[data["Period"]==latest]
                       .groupby("Warehouse")["PhysicalStock"]
@@ -300,12 +305,10 @@ def run_npi_app():
 def run_planning_overview():
     st.title("Planning Overview — Weekly Inventory Projection")
 
-    # ---------- LOAD FORECAST ----------
     fdf = get_forecast_df_from_state()
     if fdf.empty:
         return
 
-    # Normalize forecast columns
     fdf.columns = [c.strip() for c in fdf.columns]
     rename_map = {}
     for c in fdf.columns:
@@ -337,11 +340,9 @@ def run_planning_overview():
     src = st.session_state.get("forecast_source_caption", "")
     st.caption(f"📂 Forecast source: {src} | Rows: {len(fdf):,}")
 
-    # ---------- LOAD INVENTORY (to get PhysicalStock baselines) ----------
     idf = get_inventory_df_from_state()
     inv_note = st.session_state.get("inventory_source_caption", "")
 
-    # Normalize inventory
     idf.columns = [c.strip() for c in idf.columns]
     if "Period" in idf.columns:
         idf["Period"] = pd.to_datetime(idf["Period"], errors="coerce", infer_datetime_format=True)
@@ -352,7 +353,6 @@ def run_planning_overview():
                                   .str.strip())
         idf["PhysicalStock"] = pd.to_numeric(idf["PhysicalStock"], errors="coerce").fillna(0)
 
-    # Build weekly physical stock by plant (ISO year/week)
     inv_weekly = pd.DataFrame()
     if {"Warehouse","Period","PhysicalStock"}.issubset(idf.columns):
         iso = idf["Period"].dt.isocalendar()
@@ -361,10 +361,9 @@ def run_planning_overview():
         inv_weekly = (idf.groupby(["Warehouse","ISO_Year","ISO_Week"], dropna=True)["PhysicalStock"].sum().reset_index())
         inv_weekly["YearWeekIdx"] = inv_weekly["ISO_Year"]*100 + inv_weekly["ISO_Week"]
 
-    # ---------- Sidebar controls (NO uploaders) ----------
     st.sidebar.subheader("🏁 Starting Physical Stock (fallback per plant)")
     plants = sorted(fdf["Warehouse"].dropna().astype(str).unique())
-    if "start_stock_df" not in st.session_state or        set(st.session_state["start_stock_df"].get("Warehouse", [])) != set(plants):
+    if "start_stock_df" not in st.session_state or set(st.session_state["start_stock_df"].get("Warehouse", [])) != set(plants):
         st.session_state["start_stock_df"] = pd.DataFrame({"Warehouse": plants, "Starting_PhysicalStock": 0})
 
     st.sidebar.caption("Used only if no inventory baseline is found for a plant prior to the first forecast week.")
@@ -375,14 +374,12 @@ def run_planning_overview():
     st.sidebar.subheader("🔎 View Filters")
     view_plants = st.sidebar.multiselect("Plants to display", plants, default=plants)
 
-    # ---------- Build Projection with baseline rule ----------
     def build_projection(fdf: pd.DataFrame, inv_weekly: pd.DataFrame, start_df: pd.DataFrame):
         group_cols = ["Warehouse","Period_Year","Week_num","Loadingtype","SelectedDimension"]
         agg = fdf.groupby(group_cols)["Transfer_Quantity"].sum().reset_index()
         pivot = (agg.pivot_table(index=["Warehouse","Period_Year","Week_num"],
                                  columns=["Loadingtype","SelectedDimension"],
                                  values="Transfer_Quantity", aggfunc="sum").fillna(0)).reset_index()
-        # Flatten
         pivot.columns = [f"{a}_{b}" if isinstance((a,b), tuple) and b != '' else (a if not isinstance((a,b), tuple) else a)
                          for (a,b) in [(c if isinstance(c, tuple) else (c,'')) for c in pivot.columns]]
         for lt in ("Load","Unload"):
@@ -411,7 +408,7 @@ def run_planning_overview():
                 else:
                     prior = sub[sub["YearWeekIdx"]<=first_idx].sort_values("YearWeekIdx")
                     if not prior.empty:
-                        baseline = float(prior.iloc[-1]["PhysicalStock"])  # most recent available
+                        baseline = float(prior.iloc[-1]["PhysicalStock"])
             if baseline is None:
                 baseline = float(start_map.get(wh, 0))
 
@@ -426,7 +423,6 @@ def run_planning_overview():
             if len(grp)>0:
                 grp.loc[grp.index[0], "Starting_Stock"] = baseline
             grp["Projected_Stock"] = proj_vals
-
             results.append(grp)
 
         dfp = pd.concat(results, ignore_index=True) if results else pivot.copy()
@@ -442,14 +438,12 @@ def run_planning_overview():
 
     proj = build_projection(fdf, inv_weekly, st.session_state["start_stock_df"]) 
 
-    # ---------- DISPLAY ----------
     if inv_weekly.empty:
         st.info("No PhysicalStock found in the inventory file — projections start from the manual starting stock per plant.")
     else:
         st.caption(f"Inventory baseline source: {inv_note}")
 
     st.subheader("📄 Inventory Projection (week by week)")
-    # Use the multiselect choice directly
     view_df = proj[proj["Warehouse"].isin(view_plants)].copy() if view_plants else proj.copy()
     view_df = view_df.sort_values(["Warehouse","Period_Year","Week_num"])
     st.dataframe(view_df, use_container_width=True, height=450)
@@ -531,7 +525,23 @@ def run_home():
         if st.button("Clear inventory upload"):
             for k in ["inventory_file_bytes","inventory_file_name","inventory_source_caption"]:
                 st.session_state.pop(k, None)
-            st.experimental_rerun()
+            st.rerun()
+
+        st.markdown("---")
+        st.markdown("### 📄 File: 000BDD400.csv")
+        bdd000_file = st.file_uploader("Upload 000BDD400.csv", type="csv", key="home_bdd000")
+        if bdd000_file is not None:
+            st.session_state["bdd000_file_bytes"] = bdd000_file.getvalue()
+            st.session_state["bdd000_file_name"] = bdd000_file.name
+            st.success(f"File loaded: {bdd000_file.name}")
+        if st.session_state.get("bdd000_file_name"):
+            st.caption(f"Current source: {st.session_state['bdd000_file_name']}")
+        elif os.path.exists(BDD400_000_DEFAULT):
+            st.caption(f"Using default: {BDD400_000_DEFAULT}")
+        if st.button("Clear 000BDD400 upload"):
+            for k in ["bdd000_file_bytes","bdd000_file_name"]:
+                st.session_state.pop(k, None)
+            st.rerun()
 
     with c2:
         st.markdown("### 📊 TW Forecast file for Planning Overview")
@@ -549,7 +559,23 @@ def run_home():
         if st.button("Clear forecast upload"):
             for k in ["forecast_file_bytes","forecast_file_name","forecast_source_caption"]:
                 st.session_state.pop(k, None)
-            st.experimental_rerun()
+            st.rerun()
+
+        st.markdown("---")
+        st.markdown("### 📄 File: 0030BDD400.csv")
+        bdd030_file = st.file_uploader("Upload 0030BDD400.csv", type="csv", key="home_bdd030")
+        if bdd030_file is not None:
+            st.session_state["bdd030_file_bytes"] = bdd030_file.getvalue()
+            st.session_state["bdd030_file_name"] = bdd030_file.name
+            st.success(f"File loaded: {bdd030_file.name}")
+        if st.session_state.get("bdd030_file_name"):
+            st.caption(f"Current source: {st.session_state['bdd030_file_name']}")
+        elif os.path.exists(BDD400_030_DEFAULT):
+            st.caption(f"Using default: {BDD400_030_DEFAULT}")
+        if st.button("Clear 0030BDD400 upload"):
+            for k in ["bdd030_file_bytes","bdd030_file_name"]:
+                st.session_state.pop(k, None)
+            st.rerun()
 
     st.markdown("---")
     st.markdown(
