@@ -62,8 +62,8 @@ def df_to_excel_bytes(df, sheet_name="Sheet1"):
 # ------------------------------------------------------------
 INVENTORY_DEFAULT = "StockHistorySample.csv"
 FORECAST_DEFAULT = "TWforecasts.csv"
-BDD000_DEFAULT = "000BDD400.csv"    # Transfer/receipt flows per week (assumption)
-BDD0030_DEFAULT = "0030BDD400.csv"  # Closing stock per week (assumption)
+BDD000_DEFAULT = "000BDD400.csv"    # optional flows
+BDD0030_DEFAULT = "0030BDD400.csv"  # closing stock per week
 PLANTCAP_DEFAULT = "PlantCapacity.csv"
 
 # Generic getter with default fallback and user feedback
@@ -150,12 +150,9 @@ def run_npi_app():
 
     if "Period" in df.columns:
         pmin, pmax = df["Period"].min(), df["Period"].max()
-        st.caption(f"📂 Inventory source: {st.session_state.get('inventory_file_bytes_caption', '')}  \
-Rows: {len(df):,}  \
-Period range: {pmin.date()} → {pmax.date()}")
+        st.caption(f"📂 Inventory source: {st.session_state.get('inventory_file_bytes_caption', '')}  \nRows: {len(df):,}  \nPeriod range: {pmin.date()} → {pmax.date()}")
     else:
-        st.caption(f"📂 Inventory source: {st.session_state.get('inventory_file_bytes_caption','')}  \
-Rows: {len(df):,}")
+        st.caption(f"📂 Inventory source: {st.session_state.get('inventory_file_bytes_caption','')}  \nRows: {len(df):,}")
 
     def compute_last_zero_date(hist_df, qty_col):
         z = hist_df.loc[hist_df[qty_col] == 0, "Period"]
@@ -208,30 +205,6 @@ Rows: {len(df):,}")
             .set_table_styles([{"selector":"th","props":[("font-weight","600"),("background","#f7f7f7")] }])
         )
 
-    st.sidebar.subheader("📊 Filters (NPI)")
-    def _opts(s):
-        return sorted(pd.Series(s).dropna().unique().tolist())
-    warehouse_sel = st.sidebar.multiselect("Warehouse", _opts(df.get("Warehouse", [])))
-    hier2_sel = st.sidebar.multiselect("Hier2", _opts(df.get("Hier2", [])))
-    hier4_sel = st.sidebar.multiselect("Hier4", _opts(df.get("Hier4", [])))
-    ab_sel = st.sidebar.multiselect("AB", _opts(df.get("AB", [])))
-    brand_sel = st.sidebar.multiselect("Brand", _opts(df.get("Brand", [])))
-    with st.sidebar.expander("Highlight thresholds"):
-        warn = st.number_input("Warn (days)", 0, value=30)
-        high = st.number_input("High (days)", 0, value=60)
-        crit = st.number_input("Critical (days)", 0, value=90)
-    if st.sidebar.button("🧹 Clear filters"):
-        for k in ["Warehouse","Hier2","Hier4","AB","Brand"]:
-            st.session_state.pop(k, None)
-        st.rerun()
-
-    data = df.copy()
-    if warehouse_sel: data = data[data["Warehouse"].isin(warehouse_sel)]
-    if hier2_sel: data = data[data["Hier2"].isin(hier2_sel)]
-    if hier4_sel: data = data[data["Hier4"].isin(hier4_sel)]
-    if ab_sel: data = data[data["AB"].isin(ab_sel)]
-    if brand_sel: data = data[data["Brand"].isin(brand_sel)]
-
     st.title("Non-Productive Inventory Management")
     tab_o, tab_qi, tab_bs, tab_rs, tab_oa = st.tabs([
         "Overview","Quality Inspection Qty","Blocked Stock Qty","Return Stock Qty","Overaged Inventory"
@@ -243,6 +216,7 @@ Rows: {len(df):,}")
 
     with tab_o:
         st.subheader("📈 Total NPI over time (filtered)")
+        data = df.copy()
         if "Period" in data.columns:
             qcols = get_qty_cols(data)
             if qcols:
@@ -270,11 +244,11 @@ Rows: {len(df):,}")
     def metric_tab(container, qty_col, title):
         with container:
             st.subheader(title)
-            summ = build_summary(data, qty_col)
+            summ = build_summary(df.copy(), qty_col)
             if summ.empty:
                 st.warning("No data available.")
                 return
-            styled = style_days_since(summ, warn, high, crit)
+            styled = style_days_since(summ, 30, 60, 90)
             st.dataframe(styled, use_container_width=True)
             st.markdown("---")
             st.subheader("🔎 Select material + warehouse")
@@ -284,7 +258,7 @@ Rows: {len(df):,}")
             pick = st.selectbox("Choose:", summ["_label"].tolist())
             r = summ[summ["_label"]==pick].iloc[0]
             mat, wh = r["SapCode"], r["Warehouse"]
-            hist = data[(data["SapCode"]==mat)&(data["Warehouse"]==wh)].sort_values("Period")
+            hist = df[(df["SapCode"]==mat)&(df["Warehouse"]==wh)].sort_values("Period")
             st.write("### 📄 Full History")
             st.dataframe(hist, use_container_width=True)
             if "Period" in hist.columns:
@@ -345,8 +319,7 @@ def run_planning_overview_tw():
         fdf["SelectedDimension"] = "Mixed"
 
     src = st.session_state.get("forecast_file_bytes_caption", "")
-    st.caption(f"📂 Forecast source: {src}  \
-Rows: {len(fdf):,}")
+    st.caption(f"📂 Forecast source: {src}  \nRows: {len(fdf):,}")
 
     # --- Ensure Loadingtype exists; if not, infer from sign of Transfer_Quantity ---
     if 'Loadingtype' not in fdf.columns:
@@ -537,6 +510,9 @@ def _normalize_bdd0030(df: pd.DataFrame) -> pd.DataFrame:
             colmap[c] = "ClosingStock"
     if colmap:
         df = df.rename(columns=colmap)
+    # Normalize Warehouse text
+    if 'Warehouse' in df.columns:
+        df['Warehouse'] = df['Warehouse'].astype(str).str.strip()
     # Clean numerics
     if "ClosingStock" in df.columns:
         df["ClosingStock"] = (df["ClosingStock"].astype(str).str.replace(" ", "", regex=False)
@@ -626,6 +602,9 @@ def _normalize_capacity(df: pd.DataFrame) -> pd.DataFrame:
             colmap[c] = "MaxCapacity"
     if colmap:
         df = df.rename(columns=colmap)
+    # Normalize Warehouse
+    if 'Warehouse' in df.columns:
+        df['Warehouse'] = df['Warehouse'].astype(str).str.strip()
     if "MaxCapacity" in df.columns:
         df["MaxCapacity"] = (df["MaxCapacity"].astype(str).str.replace(" ", "", regex=False)
                               .str.replace(",", "", regex=False).str.strip())
@@ -655,6 +634,7 @@ def run_storage_capacity():
         invw = (b3.groupby(["Warehouse","Period_Year","Week_num"], dropna=True)["ClosingStock"]
                   .sum().reset_index())
         invw["YearWeek"] = invw["Period_Year"].astype("Int64").astype(str) + "-W" + invw["Week_num"].astype("Int64").astype(str).str.zfill(2)
+        invw['Warehouse'] = invw['Warehouse'].astype(str).str.strip()
     else:
         st.error("0030BDD400 is missing required columns (Warehouse/Plant, Period_Year, Week, ClosingStock). Please check headers.")
         return
@@ -670,6 +650,11 @@ def run_storage_capacity():
     # Utilization % (handle zero/NaN capacity)
     merged["Utilization_%"] = (merged["ClosingStock"] / merged["MaxCapacity"]).where(merged["MaxCapacity"]>0) * 100
     merged["Status"] = merged["Capacity_Gap"].apply(lambda x: "Above" if x>0 else ("At" if x==0 else "Below"))
+
+    # Warn on plants without capacity
+    missing_cap = sorted(merged.loc[merged['MaxCapacity'].isna(), 'Warehouse'].dropna().unique().tolist())
+    if missing_cap:
+        st.warning("No capacity found for: " + ", ".join(missing_cap))
 
     # Sidebar filters
     plants = sorted(merged["Warehouse"].dropna().unique().tolist())
@@ -739,14 +724,18 @@ def run_storage_capacity():
 
             st.markdown("---")
             st.subheader("🟥 Capacity Over/Under (bars)")
-            bars = (alt.Chart(v).mark_bar()
-                    .encode(x=alt.X("YearWeek:N", sort=None), y="Capacity_Gap:Q",
-                            color=alt.Color('Utilization_%:Q',
-                                             scale=alt.Scale(domain=[0,95,100,120], range=['#2ca02c','#b3d335','#FFA500','#d62728'], clamp=True),
-                                             legend=alt.Legend(title='Utilization %')),
-                            tooltip=["YearWeek","ClosingStock","MaxCapacity","Capacity_Gap", alt.Tooltip('Utilization_%:Q', title='Utilization %', format='.1f'), "Status"]) 
-                    .properties(height=260, width=1400))
-            st.altair_chart(bars, use_container_width=True)
+            v_plot = v[v['MaxCapacity'].notna() & v['Capacity_Gap'].notna()].copy()
+            if v_plot.empty:
+                st.info('No bar data to display for this plant (missing MaxCapacity or Capacity_Gap).')
+            else:
+                bars = (alt.Chart(v_plot).mark_bar()
+                        .encode(x=alt.X('YearWeek:N', sort=None), y='Capacity_Gap:Q',
+                                color=alt.Color('Utilization_%:Q',
+                                                 scale=alt.Scale(domain=[0,95,100,120], range=['#2ca02c','#b3d335','#FFA500','#d62728'], clamp=True),
+                                                 legend=alt.Legend(title='Utilization %')),
+                                tooltip=['YearWeek','ClosingStock','MaxCapacity','Capacity_Gap', alt.Tooltip('Utilization_%:Q', title='Utilization %', format='.1f'), 'Status']) 
+                        .properties(height=260, width=1400))
+                st.altair_chart(bars, use_container_width=True)
 
 # ------------------------------------------------------------
 # HOME (ALL UPLOADERS LIVE HERE)
