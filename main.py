@@ -60,7 +60,7 @@ def df_to_excel_bytes(df, sheet_name="Sheet1"):
         return None
 
 # -----------------------------------------------------------
-# SESSION-STATE FILE ROUTING (HOME → MODULES)
+# SESSION-STATE FILE ROUTING
 # -----------------------------------------------------------
 INVENTORY_DEFAULT = "StockHistorySample.csv"
 FORECAST_DEFAULT  = "TWforecasts.csv"
@@ -95,6 +95,20 @@ def get_forecast_df_from_state():
         df = read_csv_robust(FORECAST_DEFAULT)
         src = FORECAST_DEFAULT
     st.session_state["forecast_source_caption"] = src
+    return df
+
+def get_bdd030_df_from_state():
+    if st.session_state.get("bdd030_file_bytes"):
+        bio = BytesIO(st.session_state["bdd030_file_bytes"])
+        df = read_csv_robust(bio)
+        src = st.session_state.get("bdd030_file_name", "uploaded.csv")
+    else:
+        if not os.path.exists(BDD_030_DEFAULT):
+            st.warning(f"Default file '{BDD_030_DEFAULT}' not found. Upload it on Home.")
+            return pd.DataFrame()
+        df = read_csv_robust(BDD_030_DEFAULT)
+        src = BDD_030_DEFAULT
+    st.session_state["bdd030_source_caption"] = src
     return df
 
 # -----------------------------------------------------------
@@ -295,11 +309,11 @@ def run_npi_app():
     metric_tab(tab_oa, "OveragedTireQty",      "Overaged Inventory")
 
 # -----------------------------------------------------------
-# MODULE 2 — PLANNING OVERVIEW (TW Forecast Projections)
+# MODULE 2 — PLANNING OVERVIEW T&W
 # -----------------------------------------------------------
 
-def run_planning_overview():
-    st.title("Planning Overview — Weekly Inventory Projection")
+def run_planning_overview_tw():
+    st.title("Planning Overview T&W — Weekly Inventory Projection")
 
     fdf = get_forecast_df_from_state()
     if fdf.empty:
@@ -483,6 +497,115 @@ def run_planning_overview():
         st.altair_chart(unload_bar, use_container_width=True)
 
 # -----------------------------------------------------------
+# MODULE 3 — PLANNING OVERVIEW BDD400 (New)
+# -----------------------------------------------------------
+
+def run_planning_overview_bdd():
+    st.title("Planning Overview BDD400")
+
+    df = get_bdd030_df_from_state()
+    if df.empty:
+        return
+    
+    # Normalize columns similar to other functions to ensure we find what we need
+    df.columns = [c.strip() for c in df.columns]
+    
+    # Look for "Closing Stock" column (flexible search)
+    # The prompt specifically asks to use the "closingstock information".
+    # We will look for typical column names.
+    stock_col = None
+    for c in df.columns:
+        clean = c.lower().replace(" ", "").replace("_", "")
+        if clean in ["closingstock", "stock", "quantity", "physicalstock"]:
+            stock_col = c
+            break
+    
+    # Also look for Warehouse and Time columns
+    wh_col = None
+    week_col = None
+    year_col = None
+    
+    for c in df.columns:
+        clean = c.lower().replace(" ", "").replace("_", "")
+        if clean == "warehouse": wh_col = c
+        elif clean in ["week", "calweek"]: week_col = c
+        elif clean in ["year", "periodyear"]: year_col = c
+        
+    if not stock_col:
+        st.error("Could not identify a 'Closing Stock' or 'Quantity' column in 0030BDD400.csv.")
+        st.write("Columns found:", list(df.columns))
+        return
+
+    # Basic cleanup on the stock column
+    df[stock_col] = (df[stock_col].astype(str)
+                     .str.replace(" ","", regex=False)
+                     .str.replace(",","", regex=False)
+                     .str.strip())
+    df[stock_col] = pd.to_numeric(df[stock_col], errors="coerce").fillna(0)
+    
+    st.caption(f"📂 Source: {st.session_state.get('bdd030_source_caption','')} | Rows: {len(df):,}")
+
+    # Filters
+    st.sidebar.subheader("🔎 View Filters")
+    all_plants = sorted(df[wh_col].unique()) if wh_col else []
+    view_plants = []
+    if all_plants:
+        view_plants = st.sidebar.multiselect("Plants to display", all_plants, default=all_plants)
+    
+    # Prepare Data for Display
+    # We aggregate Closing Stock by Warehouse/Week just in case there are multiple lines per week
+    group_cols = [c for c in [wh_col, year_col, week_col] if c]
+    
+    if group_cols:
+        view_df = df.groupby(group_cols)[stock_col].sum().reset_index()
+    else:
+        view_df = df.copy()
+
+    # Filter
+    if wh_col and view_plants:
+        view_df = view_df[view_df[wh_col].isin(view_plants)]
+    
+    # Construct a YearWeek column for sorting/graphing if possible
+    if year_col and week_col:
+        view_df["YearWeek"] = view_df[year_col].astype(str) + "-W" + view_df[week_col].astype(str).str.zfill(2)
+        view_df = view_df.sort_values([wh_col, year_col, week_col])
+    elif week_col:
+        view_df = view_df.sort_values([wh_col, week_col])
+        view_df["YearWeek"] = view_df[week_col].astype(str)
+
+    st.subheader("📄 Inventory Projection (Closing Stock)")
+    st.dataframe(view_df, use_container_width=True, height=450)
+
+    # Downloads
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button("⬇️ Download projection (CSV)", df_to_csv_bytes(view_df),
+                           "bdd_inventory_projection.csv", mime="text/csv", use_container_width=True)
+    with c2:
+        x = df_to_excel_bytes(view_df, "Projection")
+        if x:
+            st.download_button("⬇️ Download projection (Excel)", x,
+                               "bdd_inventory_projection.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               use_container_width=True)
+                               
+    st.markdown("---")
+    st.subheader("📈 Closing Stock over Time")
+    
+    if not view_df.empty and (week_col or "YearWeek" in view_df.columns):
+        x_axis = "YearWeek:N" if "YearWeek" in view_df.columns else (week_col + ":N")
+        wh_encode = (wh_col + ":N") if wh_col else alt.value("Total")
+        tooltip_cols = [c for c in [wh_col, "YearWeek", stock_col] if c in view_df.columns]
+        
+        line = (alt.Chart(view_df).mark_line(point=True)
+                .encode(x=alt.X(x_axis, sort=None), y=f"{stock_col}:Q",
+                        color=wh_encode,
+                        tooltip=tooltip_cols) 
+                .properties(height=420, width=1400))
+        st.altair_chart(line, use_container_width=True)
+
+
+# -----------------------------------------------------------
 # PLACEHOLDERS
 # -----------------------------------------------------------
 
@@ -521,7 +644,7 @@ def run_home():
         if st.button("Clear inventory upload"):
             for k in ["inventory_file_bytes","inventory_file_name","inventory_source_caption"]:
                 st.session_state.pop(k, None)
-            st.experimental_rerun()
+            st.rerun()
 
         st.markdown("---")
         st.markdown("### 📄 File: 000BDD400.csv")
@@ -537,7 +660,7 @@ def run_home():
         if st.button("Clear 000BDD400 upload"):
             for k in ["bdd000_file_bytes", "bdd000_file_name"]:
                 st.session_state.pop(k, None)
-            st.experimental_rerun()
+            st.rerun()
 
     with c2:
         st.markdown("### 📊 TW Forecast file for Planning Overview")
@@ -555,7 +678,7 @@ def run_home():
         if st.button("Clear forecast upload"):
             for k in ["forecast_file_bytes","forecast_file_name","forecast_source_caption"]:
                 st.session_state.pop(k, None)
-            st.experimental_rerun()
+            st.rerun()
 
         st.markdown("---")
         st.markdown("### 📄 File: 0030BDD400.csv")
@@ -569,16 +692,17 @@ def run_home():
         elif os.path.exists(BDD_030_DEFAULT):
             st.caption(f"Using default: {BDD_030_DEFAULT}")
         if st.button("Clear 0030BDD400 upload"):
-            for k in ["bdd030_file_bytes", "bdd030_file_name"]:
+            for k in ["bdd030_file_bytes", "bdd030_file_name", "bdd030_source_caption"]:
                 st.session_state.pop(k, None)
-            st.experimental_rerun()
+            st.rerun()
 
     st.markdown("---")
     st.markdown(
         """
         ### Modules
         - **Non-Productive Inventory Management** — Explore non-productive stock, with **Last Zero Date = most recent zero**.
-        - **Planning Overview** — Week-by-week projections. If a week has no PhysicalStock, the baseline uses the **most recent available** PhysicalStock from the inventory file.
+        - **Planning Overview T&W** — Week-by-week projections (TW Forecasts).
+        - **Planning Overview BDD400** — Closing Stock projection using 0030BDD400.
         - **Storage Capacity Management** *(coming soon)*
         - **Transportation Management** *(coming soon)*
         """
@@ -594,7 +718,8 @@ mode = st.sidebar.radio(
     [
         "Home",
         "Non-Productive Inventory Management",
-        "Planning Overview",
+        "Planning Overview T&W",
+        "Planning Overview BDD400",
         "Storage Capacity Management",
         "Transportation Management",
     ],
@@ -604,8 +729,10 @@ if mode == "Home":
     run_home()
 elif mode == "Non-Productive Inventory Management":
     run_npi_app()
-elif mode == "Planning Overview":
-    run_planning_overview()
+elif mode == "Planning Overview T&W":
+    run_planning_overview_tw()
+elif mode == "Planning Overview BDD400":
+    run_planning_overview_bdd()
 elif mode == "Storage Capacity Management":
     run_storage_capacity()
 elif mode == "Transportation Management":
