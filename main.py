@@ -54,7 +54,6 @@ def df_to_excel_bytes(df, sheet_name="Sheet1"):
 # -----------------------------------------------------------
 INVENTORY_DEFAULT = "StockHistorySample.csv"
 FORECAST_DEFAULT  = "TWforecasts.csv"
-BDD_000_DEFAULT   = "000BDD400.csv"
 BDD_030_DEFAULT   = "0030BDD400.csv"
 CAPACITY_DEFAULT  = "PlantCapacity.csv"
 
@@ -74,29 +73,36 @@ def run_npi_app():
     st.title("Non-Productive Inventory Management")
     df, src = get_df_from_state("inventory", INVENTORY_DEFAULT)
     if df.empty:
-        st.warning("Upload inventory data on Home.")
+        st.warning("Please upload inventory data on the Home page.")
         return
 
-    # Normalization and filtering logic as before...
+    COLUMN_ALIASES = {
+        "quality inspection qty": "QualityInspectionQty",
+        "blocked stock qty": "BlockedStockQty",
+        "return stock qty": "ReturnStockQty",
+        "overaged": "OveragedTireQty",
+        "physicalstock": "PhysicalStock",
+    }
+
+    def normalize(dfin):
+        mapping = {c: COLUMN_ALIASES[c.lower().strip()] for c in dfin.columns if c.lower().strip() in COLUMN_ALIASES}
+        return dfin.rename(columns=mapping)
+
+    df = normalize(df)
+    if "Period" in df.columns:
+        df["Period"] = pd.to_datetime(df["Period"], errors="coerce")
+
+    # Basic cleanup and Tab logic
     st.caption(f"📂 Source: {src} | Rows: {len(df):,}")
-    # (Existing NPI tabs and logic)
-    st.info("NPI analysis active.")
+    
+    tab_o, tab_qi, tab_bs = st.tabs(["Overview", "Quality Inspection", "Blocked Stock"])
+    
+    with tab_o:
+        st.subheader("Inventory Distribution")
+        st.dataframe(df.head(100), use_container_width=True)
 
 # -----------------------------------------------------------
-# MODULE 2 — PLANNING OVERVIEW T&W
-# -----------------------------------------------------------
-
-def run_planning_overview_tw():
-    st.title("Planning Overview T&W")
-    fdf, fsrc = get_df_from_state("forecast", FORECAST_DEFAULT)
-    if fdf.empty:
-        st.warning("Upload TW Forecast on Home.")
-        return
-    # (Existing T&W projection logic)
-    st.info("T&W projection active.")
-
-# -----------------------------------------------------------
-# MODULE 3 — PLANNING OVERVIEW BDD400
+# MODULE 2 — PLANNING OVERVIEW BDD400
 # -----------------------------------------------------------
 
 def run_planning_overview_bdd():
@@ -106,33 +112,44 @@ def run_planning_overview_bdd():
         st.warning("Upload 0030BDD400.csv on Home.")
         return
 
-    # Robust column identification
+    # ROBUST COLUMN IDENTIFICATION TO FIX KEYERROR
     col_map = {}
     for c in df.columns:
-        clean = c.lower().replace(" ", "").replace("_", "")
-        if clean in ["closingstock", "stock", "quantity"]: col_map[c] = "ClosingStock"
-        elif clean in ["warehouse", "plant"]: col_map[c] = "Warehouse"
-        elif clean in ["week", "calweek"]: col_map[c] = "Week"
-        elif clean in ["year"]: col_map[c] = "Year"
+        clean = c.lower().replace(" ", "").replace("_", "").replace(".", "")
+        if clean in ["closingstock", "stock", "quantity", "unrestricted"]: col_map[c] = "ClosingStock"
+        elif clean in ["warehouse", "plant", "site"]: col_map[c] = "Warehouse"
+        elif clean in ["week", "calweek", "calendarweek"]: col_map[c] = "Week"
+        elif clean in ["year", "calyear", "calendaryear"]: col_map[c] = "Year"
     
     df = df.rename(columns=col_map)
+
+    # Check for required columns before processing
+    required = ["ClosingStock", "Warehouse", "Week", "Year"]
+    missing = [r for r in required if r not in df.columns]
+    if missing:
+        st.error(f"Missing columns: {missing}. Found: {list(df.columns)}")
+        return
+
     df["ClosingStock"] = pd.to_numeric(df["ClosingStock"].astype(str).str.replace(",",""), errors="coerce").fillna(0)
     df["YearWeek"] = df["Year"].astype(str) + "-W" + df["Week"].astype(str).str.zfill(2)
 
-    st.sidebar.subheader("🔎 View Filters")
+    st.sidebar.subheader("🔎 Filters")
     plants = sorted(df["Warehouse"].unique())
     sel_plants = st.sidebar.multiselect("Plants", plants, default=plants)
     
     v_df = df[df["Warehouse"].isin(sel_plants)].groupby(["Warehouse", "YearWeek"])["ClosingStock"].sum().reset_index()
+    
+    st.subheader("📄 Closing Stock Projection")
     st.dataframe(v_df, use_container_width=True)
 
     chart = (alt.Chart(v_df).mark_line(point=True).encode(
-        x=alt.X("YearWeek:N", sort=None), y="ClosingStock:Q", color="Warehouse:N"
+        x=alt.X("YearWeek:N", sort=None), y="ClosingStock:Q", color="Warehouse:N",
+        tooltip=["Warehouse", "YearWeek", "ClosingStock"]
     ).properties(height=400))
     st.altair_chart(chart, use_container_width=True)
 
 # -----------------------------------------------------------
-# MODULE 4 — STORAGE CAPACITY MANAGEMENT
+# MODULE 3 — STORAGE CAPACITY MANAGEMENT
 # -----------------------------------------------------------
 
 def run_storage_capacity():
@@ -144,43 +161,66 @@ def run_storage_capacity():
         st.warning("Please upload both 0030BDD400.csv and PlantCapacity.csv on the Home page.")
         return
 
-    # Standardization and Merging
-    # (Logic follows the comparison of ClosingStock vs MaxCapacity)
-    st.success("Comparison module active.")
+    # Standardize BDD Inventory
+    inv_map = {c: "ClosingStock" for c in df_inv.columns if "stock" in c.lower() or "unrestricted" in c.lower()}
+    inv_map.update({c: "Warehouse" for c in df_inv.columns if "plant" in c.lower() or "warehouse" in c.lower()})
+    inv_map.update({c: "Week" for c in df_inv.columns if "week" in c.lower()})
+    inv_map.update({c: "Year" for c in df_inv.columns if "year" in c.lower()})
+    df_inv = df_inv.rename(columns=inv_map)
+    
+    # Process YearWeek for chart
+    if {"Year", "Week"}.issubset(df_inv.columns):
+        df_inv["YearWeek"] = df_inv["Year"].astype(str) + "-W" + df_inv["Week"].astype(str).str.zfill(2)
+
+    # Standardize Capacity
+    cap_map = {c: "MaxCapacity" for c in df_cap.columns if "cap" in c.lower()}
+    cap_map.update({c: "Warehouse" for c in df_cap.columns if "plant" in c.lower() or "warehouse" in c.lower()})
+    df_cap = df_cap.rename(columns=cap_map)
+
+    # Merge and Compare
+    merged = df_inv.groupby(["Warehouse", "YearWeek"])["ClosingStock"].sum().reset_index()
+    merged = merged.merge(df_cap[["Warehouse", "MaxCapacity"]], on="Warehouse", how="left")
+    merged["Status"] = merged.apply(lambda x: "🚨 OVER" if x["ClosingStock"] > x["MaxCapacity"] else "✅ OK", axis=1)
+
+    st.subheader("Capacity vs. Inventory")
+    st.dataframe(merged, use_container_width=True)
+
+    # Dual line chart: Stock vs Capacity
+    base = alt.Chart(merged).encode(x=alt.X("YearWeek:N", sort=None))
+    line1 = base.mark_line(point=True).encode(y="ClosingStock:Q", color="Warehouse:N")
+    line2 = base.mark_rule(strokeDash=[5,5]).encode(y="MaxCapacity:Q", color=alt.value("red"))
+    st.altair_chart((line1 + line2).properties(height=450), use_container_width=True)
 
 # -----------------------------------------------------------
 # HOME PAGE
 # -----------------------------------------------------------
 
 def run_home():
-    st.title("Supply Chain Management Toolkit")
+    st.title("Supply Chain Toolkit")
     c1, c2 = st.columns(2)
-
     with c1:
-        st.markdown("### 📦 Core Inventory & BDD Files")
-        for key, label in [("inventory", "StockHistorySample.csv"), ("bdd030", "0030BDD400.csv")]:
-            up = st.file_uploader(f"Upload {label}", type="csv", key=f"up_{key}")
+        st.markdown("### 📦 Inventory & Planning")
+        for k, lbl in [("inventory", "StockHistorySample.csv"), ("bdd030", "0030BDD400.csv")]:
+            up = st.file_uploader(f"Upload {lbl}", type="csv", key=f"up_{k}")
             if up:
-                st.session_state[f"{key}_file_bytes"] = up.getvalue()
-                st.session_state[f"{key}_file_name"] = up.name
-
+                st.session_state[f"{k}_file_bytes"] = up.getvalue()
+                st.session_state[f"{k}_file_name"] = up.name
     with c2:
-        st.markdown("### 📊 Forecast & Capacity Files")
-        for key, label in [("forecast", "TWforecasts.csv"), ("capacity", "PlantCapacity.csv")]:
-            up = st.file_uploader(f"Upload {label}", type="csv", key=f"up_{key}")
+        st.markdown("### 📊 Capacity & Forecast")
+        for k, lbl in [("capacity", "PlantCapacity.csv"), ("forecast", "TWforecasts.csv")]:
+            up = st.file_uploader(f"Upload {lbl}", type="csv", key=f"up_{k}")
             if up:
-                st.session_state[f"{key}_file_bytes"] = up.getvalue()
-                st.session_state[f"{key}_file_name"] = up.name
+                st.session_state[f"{k}_file_bytes"] = up.getvalue()
+                st.session_state[f"{k}_file_name"] = up.name
 
 # -----------------------------------------------------------
 # NAVIGATION
 # -----------------------------------------------------------
 
-st.sidebar.title("📂 Application Sections")
-mode = st.sidebar.radio("Navigate", ["Home", "Non-Productive Inventory Management", "Planning Overview T&W", "Planning Overview BDD400", "Storage Capacity Management", "Transportation Management"])
+st.sidebar.title("📂 Navigation")
+mode = st.sidebar.radio("Section", ["Home", "NPI Management", "Planning BDD400", "Storage Capacity"])
 
 if mode == "Home": run_home()
-elif mode == "Non-Productive Inventory Management": run_npi_app()
-elif mode == "Planning Overview T&W": run_planning_overview_tw()
-elif mode == "Planning Overview BDD400": run_planning_overview_bdd()
-elif mode == "Storage Capacity Management": run_storage_capacity()
+elif mode == "NPI Management": run_npi_app()
+elif mode == "Planning BDD400": run_planning_overview_bdd()
+elif mode == "Storage Capacity": run_storage_capacity()
