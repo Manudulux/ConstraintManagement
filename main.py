@@ -67,6 +67,7 @@ BDD0030_DEFAULT = "0030BDD400.csv"  # Closing stock per week (assumption)
 PLANTCAP_DEFAULT = "PlantCapacity.csv"
 
 # Generic getter with default fallback and user feedback
+
 def _get_df_from_state(bytes_key: str, name_key: str, default_filename: str, warn_if_missing: bool = True):
     if st.session_state.get(bytes_key):
         bio = BytesIO(st.session_state[bytes_key])
@@ -102,6 +103,7 @@ def get_plant_capacity_df_from_state():
 # ------------------------------------------------------------
 # MODULE 1 — NON-PRODUCTIVE INVENTORY MANAGEMENT (NPI)
 # ------------------------------------------------------------
+
 def run_npi_app():
     COLUMN_ALIASES = {
         "quality inspection qty": "QualityInspectionQty",
@@ -203,7 +205,7 @@ Rows: {len(df):,}")
             df.style
             .apply(color, subset=["Days Since Zero"], axis=0)
             .set_properties(subset=["Quantity"], **{"font-weight":"600"})
-            .set_table_styles([{"selector":"th","props":[("font-weight","600"),("background","#f7f7f7")]}])
+            .set_table_styles([{"selector":"th","props":[("font-weight","600"),("background","#f7f7f7")] }])
         )
 
     st.sidebar.subheader("📊 Filters (NPI)")
@@ -248,7 +250,7 @@ Rows: {len(df):,}")
                 long = tot.melt("Period", qcols, "InventoryType", "Quantity")
                 chart = (alt.Chart(long).mark_line(point=True)
                          .encode(x="Period:T", y="Quantity:Q", color="InventoryType:N",
-                                 tooltip=["Period:T","InventoryType:N","Quantity:Q"])
+                                 tooltip=["Period:T","InventoryType:N","Quantity:Q"]) 
                          .properties(height=420, width=1400))
                 st.altair_chart(chart, use_container_width=True)
         st.markdown("---")
@@ -299,6 +301,7 @@ Rows: {len(df):,}")
 # ------------------------------------------------------------
 # MODULE 2 — PLANNING OVERVIEW (T&W Forecast Projections)
 # ------------------------------------------------------------
+
 def run_planning_overview_tw():
     st.title("Planning Overview T&W — Weekly Inventory Projection")
 
@@ -333,14 +336,30 @@ def run_planning_overview_tw():
 
     if "Week" in fdf.columns:
         fdf["Week"] = fdf["Week"].astype(str).str.strip()
-        fdf["Week_num"] = fdf["Week"].apply(lambda s: int(re.sub(r"[^\\d]","", s)) if re.search(r"\\d+", s) else None)
+        fdf["Week_num"] = fdf["Week"].apply(lambda s: int(re.sub(r"[^\d]","", s)) if re.search(r"\d+", s) else None)
+        fdf["Week_num"] = pd.to_numeric(fdf["Week_num"], errors="coerce").astype("Int64")
 
     if "SelectedDimension" in fdf.columns:
         fdf["SelectedDimension"] = fdf["SelectedDimension"].astype(str).str.strip().str.title()
+    else:
+        fdf["SelectedDimension"] = "Mixed"
 
     src = st.session_state.get("forecast_file_bytes_caption", "")
     st.caption(f"📂 Forecast source: {src}  \
 Rows: {len(fdf):,}")
+
+    # --- Ensure Loadingtype exists; if not, infer from sign of Transfer_Quantity ---
+    if 'Loadingtype' not in fdf.columns:
+        if 'Transfer_Quantity' in fdf.columns:
+            fdf['Load_sign'] = pd.to_numeric(fdf['Transfer_Quantity'], errors='coerce').fillna(0)
+            fdf['Loadingtype'] = fdf['Load_sign'].apply(lambda q: 'Unload' if q >= 0 else 'Load')
+            fdf['Transfer_Quantity'] = fdf['Load_sign'].abs()
+            fdf.drop(columns=['Load_sign'], inplace=True)
+        else:
+            fdf['Loadingtype'] = 'Unload'
+
+    # Drop rows missing essential keys
+    fdf = fdf.dropna(subset=[c for c in ['Warehouse','Period_Year','Week_num'] if c in fdf.columns])
 
     # -------- LOAD INVENTORY (to get PhysicalStock baselines) --------
     idf = get_inventory_df_from_state()
@@ -382,6 +401,9 @@ Rows: {len(fdf):,}")
     # -------- Build Projection with baseline rule --------
     def build_projection(fdf: pd.DataFrame, inv_weekly: pd.DataFrame, start_df: pd.DataFrame):
         group_cols = ["Warehouse","Period_Year","Week_num","Loadingtype","SelectedDimension"]
+        for c in ["Loadingtype","SelectedDimension"]:
+            if c not in fdf.columns:
+                fdf[c] = "Mixed" if c == "SelectedDimension" else "Unload"
         agg = fdf.groupby(group_cols)["Transfer_Quantity"].sum().reset_index()
         pivot = (agg.pivot_table(index=["Warehouse","Period_Year","Week_num"],
                                  columns=["Loadingtype","SelectedDimension"],
@@ -397,7 +419,7 @@ Rows: {len(fdf):,}")
         pivot["Load_Total"] = pivot["Load_Loose"] + pivot["Load_Pallet"] + pivot["Load_Mixed"]
         pivot["Unload_Total"] = pivot["Unload_Loose"] + pivot["Unload_Pallet"] + pivot["Unload_Mixed"]
         pivot = pivot.sort_values(["Warehouse","Period_Year","Week_num"])
-        pivot["YearWeekIdx"] = pivot["Period_Year"]*100 + pivot["Week_num"].astype(int)
+        pivot["YearWeekIdx"] = pivot["Period_Year"]*100 + pivot["Week_num"].astype("Int64").fillna(0).astype(int)
 
         start_map = dict(zip(start_df["Warehouse"], pd.to_numeric(start_df["Starting_PhysicalStock"], errors="coerce").fillna(0)))
 
@@ -431,7 +453,7 @@ Rows: {len(fdf):,}")
             grp["Projected_Stock"] = proj_vals
             results.append(grp)
         dfp = pd.concat(results, ignore_index=True) if results else pivot.copy()
-        dfp["YearWeek"] = dfp["Period_Year"].astype(str) + "-W" + dfp["Week_num"].astype(int).astype(str).str.zfill(2)
+        dfp["YearWeek"] = dfp["Period_Year"].astype("Int64").astype(str) + "-W" + dfp["Week_num"].astype("Int64").astype(str).str.zfill(2)
         cols = [
             "Warehouse","Period_Year","Week_num","YearWeek","Starting_Stock",
             "Load_Loose","Load_Pallet","Load_Mixed","Load_Total",
@@ -498,6 +520,7 @@ Rows: {len(fdf):,}")
 # ------------------------------------------------------------
 # MODULE 3 — PLANNING OVERVIEW BDD400 (Closing Stock time series)
 # ------------------------------------------------------------
+
 def _normalize_bdd0030(df: pd.DataFrame) -> pd.DataFrame:
     # Normalize common columns for 0030 BDD400: Warehouse/Plant, Period_Year, Week, ClosingStock
     df = df.copy()
@@ -521,12 +544,18 @@ def _normalize_bdd0030(df: pd.DataFrame) -> pd.DataFrame:
         df["ClosingStock"] = pd.to_numeric(df["ClosingStock"], errors="coerce").fillna(0)
     if "Week" in df.columns:
         df["Week"] = df["Week"].astype(str).str.strip()
-        # extract week number if string like 'W07'
-        df["Week_num"] = df["Week"].apply(lambda s: int(re.sub(r"[^\\d]", "", s)) if re.search(r"\\d+", s) else None)
-    # Build YearWeek label
+        df["Week_num"] = df["Week"].apply(lambda s: int(re.sub(r"[^\d]", "", s)) if re.search(r"\d+", s) else None)
+        df["Week_num"] = pd.to_numeric(df["Week_num"], errors="coerce").astype("Int64")
+    # Build YearWeek label safely only where both fields exist
     if {"Period_Year","Week_num"}.issubset(df.columns):
-        df["YearWeek"] = df["Period_Year"].astype(str) + "-W" + df["Week_num"].astype(int).astype(str).str.zfill(2)
+        df["Period_Year"] = pd.to_numeric(df["Period_Year"], errors="coerce").astype("Int64")
+        mask = df["Period_Year"].notna() & df["Week_num"].notna()
+        year_str = df.loc[mask, "Period_Year"].astype("Int64").astype(str)
+        week_str = df.loc[mask, "Week_num"].astype("Int64").astype(str).str.zfill(2)
+        df["YearWeek"] = None
+        df.loc[mask, "YearWeek"] = year_str + "-W" + week_str
     return df
+
 
 def run_planning_overview_bdd400():
     st.title("Planning Overview BDD400 — Closing Stock by Plant")
@@ -542,7 +571,10 @@ def run_planning_overview_bdd400():
     if {"Warehouse","Period_Year","Week_num","ClosingStock"}.issubset(b3.columns):
         agg = (b3.groupby(["Warehouse","Period_Year","Week_num"], dropna=True)["ClosingStock"]
                  .sum().reset_index())
-        agg["YearWeek"] = agg["Period_Year"].astype(str) + "-W" + agg["Week_num"].astype(int).astype(str).str.zfill(2)
+        # Safe YearWeek label: build where available
+        mask = agg["Period_Year"].notna() & agg["Week_num"].notna()
+        agg["YearWeek"] = None
+        agg.loc[mask, "YearWeek"] = agg.loc[mask, "Period_Year"].astype("Int64").astype(str) + "-W" + agg.loc[mask, "Week_num"].astype("Int64").astype(str).str.zfill(2)
     else:
         st.error("0030BDD400 is missing required columns (Warehouse/Plant, Period_Year, Week, ClosingStock). Please check headers.")
         return
@@ -552,7 +584,7 @@ def run_planning_overview_bdd400():
     view_plants = st.sidebar.multiselect("Plants to display", plants, default=plants)
 
     view_df = agg[agg["Warehouse"].isin(view_plants)].copy() if view_plants else agg.copy()
-    view_df = view_df.sort_values(["Warehouse","Period_Year","Week_num"])
+    view_df = view_df.sort_values(["Warehouse","Period_Year","Week_num"]) if not view_df.empty else view_df
 
     st.subheader("📄 Closing Stock (week by week)")
     st.dataframe(view_df, use_container_width=True, height=450)
@@ -582,6 +614,7 @@ def run_planning_overview_bdd400():
 # ------------------------------------------------------------
 # MODULE 4 — STORAGE CAPACITY MANAGEMENT
 # ------------------------------------------------------------
+
 def _normalize_capacity(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     colmap = {}
@@ -598,6 +631,7 @@ def _normalize_capacity(df: pd.DataFrame) -> pd.DataFrame:
                               .str.replace(",", "", regex=False).str.strip())
         df["MaxCapacity"] = pd.to_numeric(df["MaxCapacity"], errors="coerce").fillna(0)
     return df
+
 
 def run_storage_capacity():
     st.title("Storage Capacity Management")
@@ -620,7 +654,7 @@ def run_storage_capacity():
     if {"Warehouse","Period_Year","Week_num","ClosingStock"}.issubset(b3.columns):
         invw = (b3.groupby(["Warehouse","Period_Year","Week_num"], dropna=True)["ClosingStock"]
                   .sum().reset_index())
-        invw["YearWeek"] = invw["Period_Year"].astype(str) + "-W" + invw["Week_num"].astype(int).astype(str).str.zfill(2)
+        invw["YearWeek"] = invw["Period_Year"].astype("Int64").astype(str) + "-W" + invw["Week_num"].astype("Int64").astype(str).str.zfill(2)
     else:
         st.error("0030BDD400 is missing required columns (Warehouse/Plant, Period_Year, Week, ClosingStock). Please check headers.")
         return
@@ -706,29 +740,18 @@ def run_storage_capacity():
             st.markdown("---")
             st.subheader("🟥 Capacity Over/Under (bars)")
             bars = (alt.Chart(v).mark_bar()
-                    .encode(
-                        x=alt.X("YearWeek:N", sort=None),
-                        y="Capacity_Gap:Q",
-                        # Gradient shading by Utilization %
-                        color=alt.Color(
-                            'Utilization_%:Q',
-                            scale=alt.Scale(
-                                domain=[0, 95, 100, 120],
-                                range=['#2ca02c', '#b3d335', '#FFA500', '#d62728'],
-                                clamp=True
-                            ),
-                            legend=alt.Legend(title='Utilization %')
-                        ),
-                        tooltip=["YearWeek","ClosingStock","MaxCapacity","Capacity_Gap",
-                                 alt.Tooltip('Utilization_%:Q', title='Utilization %', format='.1f'),
-                                 "Status"]
-                    )
+                    .encode(x=alt.X("YearWeek:N", sort=None), y="Capacity_Gap:Q",
+                            color=alt.Color('Utilization_%:Q',
+                                             scale=alt.Scale(domain=[0,95,100,120], range=['#2ca02c','#b3d335','#FFA500','#d62728'], clamp=True),
+                                             legend=alt.Legend(title='Utilization %')),
+                            tooltip=["YearWeek","ClosingStock","MaxCapacity","Capacity_Gap", alt.Tooltip('Utilization_%:Q', title='Utilization %', format='.1f'), "Status"]) 
                     .properties(height=260, width=1400))
             st.altair_chart(bars, use_container_width=True)
 
 # ------------------------------------------------------------
 # HOME (ALL UPLOADERS LIVE HERE)
 # ------------------------------------------------------------
+
 def run_home():
     st.title("Welcome to the Supply Chain Management Dashboard")
     st.subheader("Upload data below, then use the sidebar to open a module.")
@@ -836,6 +859,7 @@ def run_home():
 # ------------------------------------------------------------
 # NAVIGATION
 # ------------------------------------------------------------
+
 st.sidebar.title("📂 Application Sections")
 mode = st.sidebar.radio(
     "Choose a section",
