@@ -497,7 +497,7 @@ def run_planning_overview_tw():
         st.altair_chart(unload_bar, use_container_width=True)
 
 # -----------------------------------------------------------
-# MODULE 3 — PLANNING OVERVIEW BDD400 (New)
+# MODULE 3 — PLANNING OVERVIEW BDD400 (Revised)
 # -----------------------------------------------------------
 
 def run_planning_overview_bdd():
@@ -506,78 +506,93 @@ def run_planning_overview_bdd():
     df = get_bdd030_df_from_state()
     if df.empty:
         return
-    
-    # Normalize columns similar to other functions to ensure we find what we need
-    df.columns = [c.strip() for c in df.columns]
-    
-    # Look for "Closing Stock" column (flexible search)
-    stock_col = None
+
+    # 1. STANDARDIZE COLUMNS TO ENSURE ROBUSTNESS
+    # We will rename columns to: "ClosingStock", "Warehouse", "Week", "Year"
+    col_map = {}
+    found_stock = False
+    found_wh = False
+    found_week = False
+    found_year = False
+
     for c in df.columns:
-        clean = c.lower().replace(" ", "").replace("_", "")
-        if clean in ["closingstock", "stock", "quantity", "physicalstock"]:
-            stock_col = c
-            break
-    
-    # Also look for Warehouse and Time columns
-    wh_col = None
-    week_col = None
-    year_col = None
-    
-    for c in df.columns:
-        clean = c.lower().replace(" ", "").replace("_", "")
-        if clean == "warehouse": wh_col = c
-        elif clean in ["week", "calweek"]: week_col = c
-        elif clean in ["year", "periodyear"]: year_col = c
+        clean = c.lower().replace(" ", "").replace("_", "").replace(".", "")
         
-    if not stock_col:
-        st.error("Could not identify a 'Closing Stock' or 'Quantity' column in 0030BDD400.csv.")
+        # Closing Stock matchers
+        if not found_stock and clean in ["closingstock", "stock", "quantity", "physicalstock", "unrestricted", "qty", "closing_stock"]:
+            col_map[c] = "ClosingStock"
+            found_stock = True
+            
+        # Warehouse matchers
+        elif not found_wh and clean in ["warehouse", "plant", "site", "location", "loc", "werks"]:
+            col_map[c] = "Warehouse"
+            found_wh = True
+            
+        # Week matchers
+        elif not found_week and clean in ["week", "calweek", "calendarweek", "bucket"]:
+            col_map[c] = "Week"
+            found_week = True
+            
+        # Year matchers
+        elif not found_year and clean in ["year", "fiscalyear", "periodyear", "calyear"]:
+            col_map[c] = "Year"
+            found_year = True
+
+    if not found_stock:
+        st.error("Could not identify a 'Closing Stock' column (e.g., Closing Stock, Quantity, Stock).")
         st.write("Columns found:", list(df.columns))
         return
 
-    # Basic cleanup on the stock column
-    df[stock_col] = (df[stock_col].astype(str)
-                     .str.replace(" ","", regex=False)
-                     .str.replace(",","", regex=False)
-                     .str.strip())
-    df[stock_col] = pd.to_numeric(df[stock_col], errors="coerce").fillna(0)
-    
+    # Apply renaming
+    df = df.rename(columns=col_map)
     st.caption(f"📂 Source: {st.session_state.get('bdd030_source_caption','')} | Rows: {len(df):,}")
+    
+    # 2. DATA TYPE CLEANUP
+    df["ClosingStock"] = (df["ClosingStock"].astype(str)
+                          .str.replace(" ", "", regex=False)
+                          .str.replace(",", "", regex=False)
+                          .str.strip())
+    df["ClosingStock"] = pd.to_numeric(df["ClosingStock"], errors="coerce").fillna(0)
 
-    # Filters
-    st.sidebar.subheader("🔎 View Filters")
-    all_plants = sorted(df[wh_col].unique()) if wh_col else []
-    view_plants = []
-    if all_plants:
-        view_plants = st.sidebar.multiselect("Plants to display", all_plants, default=all_plants)
-    
-    # Prepare Data for Display
-    # We aggregate Closing Stock by Warehouse/Week just in case there are multiple lines per week
-    group_cols = [c for c in [wh_col, year_col, week_col] if c]
-    
-    if group_cols:
-        view_df = df.groupby(group_cols)[stock_col].sum().reset_index()
+    if "Warehouse" in df.columns:
+        df["Warehouse"] = df["Warehouse"].astype(str)
+
+    # 3. BUILD YEAR-WEEK IDENTIFIER
+    if "Year" in df.columns and "Week" in df.columns:
+        df["YearWeek"] = df["Year"].astype(str) + "-W" + df["Week"].astype(str).str.zfill(2)
+    elif "Week" in df.columns:
+        df["YearWeek"] = df["Week"].astype(str)
     else:
-        view_df = df.copy()
+        # Fallback if no time dimension found
+        df["YearWeek"] = "Total"
 
-    # Filter
-    if wh_col and view_plants:
-        view_df = view_df[view_df[wh_col].isin(view_plants)]
+    # 4. SIDEBAR FILTERING (PLANTS)
+    st.sidebar.subheader("🔎 View Filters")
+    filtered_df = df.copy()
     
-    # Construct a YearWeek column for sorting/graphing if possible
-    # FIX: Ensure we only sort by columns that actually exist (handling case where wh_col might be None)
-    if year_col and week_col:
-        view_df["YearWeek"] = view_df[year_col].astype(str) + "-W" + view_df[week_col].astype(str).str.zfill(2)
-        sort_keys = [c for c in [wh_col, year_col, week_col] if c]
-        view_df = view_df.sort_values(sort_keys)
-    elif week_col:
-        sort_keys = [c for c in [wh_col, week_col] if c]
-        view_df = view_df.sort_values(sort_keys)
-        view_df["YearWeek"] = view_df[week_col].astype(str)
+    if "Warehouse" in df.columns:
+        all_plants = sorted(df["Warehouse"].unique())
+        # Let user select plants. Default to all.
+        sel_plants = st.sidebar.multiselect("Plants to display", all_plants, default=all_plants)
+        if sel_plants:
+            filtered_df = filtered_df[filtered_df["Warehouse"].isin(sel_plants)]
+    else:
+        st.sidebar.info("No 'Warehouse' column found to filter by.")
 
+    # 5. AGGREGATION FOR DISPLAY
+    # Sum stock by Warehouse + YearWeek
+    group_cols = ["YearWeek"]
+    if "Warehouse" in filtered_df.columns:
+        group_cols.insert(0, "Warehouse")
+        
+    view_df = filtered_df.groupby(group_cols)["ClosingStock"].sum().reset_index()
+    view_df = view_df.sort_values(group_cols)
+
+    # 6. TABLE DISPLAY
     st.subheader("📄 Inventory Projection (Closing Stock)")
     st.dataframe(view_df, use_container_width=True, height=450)
 
-    # Downloads
+    # 7. DOWNLOAD BUTTONS
     c1, c2 = st.columns(2)
     with c1:
         st.download_button("⬇️ Download projection (CSV)", df_to_csv_bytes(view_df),
@@ -593,17 +608,22 @@ def run_planning_overview_bdd():
     st.markdown("---")
     st.subheader("📈 Closing Stock over Time")
     
-    if not view_df.empty and (week_col or "YearWeek" in view_df.columns):
-        x_axis = "YearWeek:N" if "YearWeek" in view_df.columns else (week_col + ":N")
-        wh_encode = (wh_col + ":N") if wh_col else alt.value("Total")
-        tooltip_cols = [c for c in [wh_col, "YearWeek", stock_col] if c in view_df.columns]
-        
-        line = (alt.Chart(view_df).mark_line(point=True)
-                .encode(x=alt.X(x_axis, sort=None), y=f"{stock_col}:Q",
-                        color=wh_encode,
-                        tooltip=tooltip_cols) 
+    if not view_df.empty:
+        # Define encoding based on availability
+        color_def = "Warehouse:N" if "Warehouse" in view_df.columns else alt.value("steelblue")
+        tooltips = ["YearWeek", "ClosingStock"]
+        if "Warehouse" in view_df.columns:
+            tooltips.append("Warehouse")
+
+        chart = (alt.Chart(view_df).mark_line(point=True)
+                 .encode(
+                     x=alt.X("YearWeek:N", title="Week", sort=None),
+                     y=alt.Y("ClosingStock:Q", title="Closing Stock"),
+                     color=color_def,
+                     tooltip=tooltips
+                 ) 
                 .properties(height=420, width=1400))
-        st.altair_chart(line, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
 
 
 # -----------------------------------------------------------
