@@ -3,7 +3,6 @@ import streamlit as st
 import pandas as pd
 import os
 import altair as alt
-import matplotlib.pyplot as plt
 import re
 from io import BytesIO
 
@@ -932,12 +931,14 @@ def run_storage_capacity():
         if view.empty:
             st.info("No data available for the current filter selection.")
         else:
+            # Utilization (% of capacity) for thresholds
             v2 = view.copy()
             v2["UtilizationPct"] = (v2["ClosingStock"] / v2["MaxCapacity"]) * 100
             v2.loc[v2["MaxCapacity"] <= 0, "UtilizationPct"] = pd.NA
             v2["YearWeekIdx"] = v2["Period_Year"] * 100 + v2["Week_num"].astype(int)
             v2["Capacity_Gap"] = v2["ClosingStock"] - v2["MaxCapacity"]
 
+            # Sort weeks chronologically
             week_order = (
                 v2[["YearWeek", "YearWeekIdx"]]
                 .drop_duplicates()
@@ -950,6 +951,7 @@ def run_storage_capacity():
                 "🟩 < 95% | 🟨 95%–105% | 🟥 > 105%"
             )
 
+            # Plant x Week table (values = Capacity_Gap; colors = UtilizationPct)
             util_pivot = (
                 v2.pivot_table(
                     index="Warehouse",
@@ -991,52 +993,9 @@ def run_storage_capacity():
             st.subheader("🗓️ Utilization by Plant & Week")
             st.dataframe(styled_gap, use_container_width=True, height=520)
 
+            # Show underlying data expanded by default
             with st.expander("Show data", expanded=True):
                 st.dataframe(gap_pivot, use_container_width=True, height=420)
-
-            # Static heatmap (matplotlib) to avoid Vega/Streamlit chart data panel
-            plant_order = sorted(v2["Warehouse"].dropna().unique().tolist())
-            gap_matrix = gap_pivot.reindex(index=plant_order, columns=week_order)
-            util_matrix = util_pivot.reindex(index=plant_order, columns=week_order)
-
-            # Build discrete color categories based on utilization
-            import numpy as np
-            cat = np.full(gap_matrix.shape, np.nan)
-            util_vals = util_matrix.values.astype(float)
-            cat[~np.isnan(util_vals) & (util_vals < 95)] = 0
-            cat[~np.isnan(util_vals) & (util_vals >= 95) & (util_vals <= 105)] = 1
-            cat[~np.isnan(util_vals) & (util_vals > 105)] = 2
-
-            from matplotlib.colors import ListedColormap
-            cmap = ListedColormap(["#d9f2d9", "#fff2cc", "#f8d7da"])  # green/yellow/red
-
-            fig_h = max(3.5, 0.35 * len(plant_order))
-            fig_w = max(8, 0.45 * len(week_order))
-            fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-            # show categories; mask NaNs as white
-            img = ax.imshow(cat, aspect='auto', interpolation='nearest', cmap=cmap, vmin=0, vmax=2)
-
-            ax.set_xticks(range(len(week_order)))
-            ax.set_xticklabels(week_order, rotation=45, ha='right')
-            ax.set_yticks(range(len(plant_order)))
-            ax.set_yticklabels(plant_order)
-            ax.set_title("Over / Under Capacity (colored by utilization thresholds)")
-
-            # annotate gaps
-            gap_vals = gap_matrix.values
-            for i in range(gap_vals.shape[0]):
-                for j in range(gap_vals.shape[1]):
-                    v = gap_vals[i, j]
-                    if pd.isna(v):
-                        continue
-                    label = f"{v:+.0f}"
-                    ax.text(j, i, label, ha='center', va='center', fontsize=8, color="#1f1f1f")
-
-            ax.set_xlabel("Week")
-            ax.set_ylabel("Plant")
-            ax.grid(False)
-            fig.tight_layout()
-            st.pyplot(fig, use_container_width=True)
 
             st.markdown("---")
 
@@ -1111,6 +1070,7 @@ def run_storage_capacity():
             )
 
             if not v.empty:
+                # Two-series line chart: ClosingStock and MaxCapacity
                 v_long = pd.concat(
                     [
                         v.assign(Metric="ClosingStock", Value=v["ClosingStock"])[
