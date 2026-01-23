@@ -7,3 +7,5 @@ scipy
 matplotlib
 io
 re
+openpyxl
+altair
