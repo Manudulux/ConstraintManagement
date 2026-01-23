@@ -924,7 +924,7 @@ def run_storage_capacity():
         else merged.copy()
     )
 
-    tab_detail, tab_summary = st.tabs(["Detail", "Over / Under Summary"])
+    tab_summary, tab_detail = st.tabs(["Over / Under Summary", "Detail"])
 
     with tab_detail:
         st.subheader("📄 Capacity Check by Plant & Week")
@@ -1081,7 +1081,7 @@ def run_storage_capacity():
             st.subheader("🗓️ Utilization by Plant & Week")
             st.dataframe(styled_gap, use_container_width=True, height=520)
 
-            # Heatmap (no tooltips)
+            # Heatmap (tooltips disabled at mark level)
             plant_order = sorted(v2["Warehouse"].dropna().unique().tolist())
             heat_src = v2[["Warehouse", "YearWeek", "Capacity_Gap", "UtilizationPct"]].copy()
             heat_src["Capacity_Gap"] = pd.to_numeric(heat_src["Capacity_Gap"], errors="coerce")
@@ -1093,7 +1093,7 @@ def run_storage_capacity():
                     UtilBand="isValid(datum.UtilizationPct) ? (datum.UtilizationPct < 95 ? 'Under' : (datum.UtilizationPct <= 105 ? 'Near' : 'Over')) : 'NoCap'",
                     GapLabel="isValid(datum.Capacity_Gap) ? (datum.Capacity_Gap > 0 ? '+' + format(datum.Capacity_Gap, ',.0f') : format(datum.Capacity_Gap, ',.0f')) : ''",
                 )
-                .mark_rect(stroke="#e0e0e0", strokeWidth=0.5)
+                .mark_rect(tooltip=None, stroke="#e0e0e0", strokeWidth=0.5)
                 .encode(
                     x=alt.X("YearWeek:N", sort=week_order, title="Week"),
                     y=alt.Y("Warehouse:N", sort=plant_order, title="Plant"),
@@ -1114,7 +1114,7 @@ def run_storage_capacity():
                 .transform_calculate(
                     GapLabel="isValid(datum.Capacity_Gap) ? (datum.Capacity_Gap > 0 ? '+' + format(datum.Capacity_Gap, ',.0f') : format(datum.Capacity_Gap, ',.0f')) : ''",
                 )
-                .mark_text(size=11, color="#1f1f1f")
+                .mark_text(tooltip=None, size=11, color="#1f1f1f")
                 .encode(
                     x=alt.X("YearWeek:N", sort=week_order, title=""),
                     y=alt.Y("Warehouse:N", sort=plant_order, title=""),
