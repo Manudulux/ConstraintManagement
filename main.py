@@ -991,8 +991,12 @@ def run_storage_capacity():
             )
 
             st.subheader("🗓️ Utilization by Plant & Week")
-            # Use st.table to avoid the interactive dataframe "Show data" expander
-            st.table(styled_gap)
+            # Interactive dataframe back (sorting/search/etc). Note: Streamlit may add its own "Show data" UI for Stylers.
+            st.dataframe(styled_gap, use_container_width=True, height=520)
+
+            # Provide our own expanded-by-default data view
+            with st.expander("Show data", expanded=True):
+                st.dataframe(gap_pivot, use_container_width=True, height=420)
 
             # Heatmap (tooltips disabled at mark level)
             plant_order = sorted(v2["Warehouse"].dropna().unique().tolist())
@@ -1326,3 +1330,4 @@ elif mode == "Storage Capacity Management":
 elif mode == "Mitigation proposal":
     st.title("Mitigation proposal")
     st.info("This module will be developed in a future release.")
+
