@@ -1038,10 +1038,16 @@ def run_storage_capacity():
                 )
             )
 
-            # Disable Vega-Embed action menu for this chart (removes "View data" table)
-            alt.renderers.set_embed_options(actions=False)
+            # Hide Vega-Embed action menu (removes "View data" table entirely)
+            st.markdown(
+                """
+                <style>
+                .vega-actions {display:none !important;}
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
             st.altair_chart(heat + heat_text, use_container_width=True)
-            alt.renderers.set_embed_options(actions=True)
 
             st.markdown("---")
 
