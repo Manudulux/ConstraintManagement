@@ -1021,9 +1021,10 @@ def run_storage_capacity():
         else:
             # Build utilization (% of capacity) for thresholds
             v2 = view.copy()
-            v2["UtilizationPct"] = (v2["ClosingStock"] / v2["MaxCapacity"]).replace([pd.NA, pd.NaT, float('inf')], pd.NA) * 100
+            v2["UtilizationPct"] = (v2["ClosingStock"] / v2["MaxCapacity"]) * 100
             v2.loc[v2["MaxCapacity"] <= 0, "UtilizationPct"] = pd.NA
             v2["YearWeekIdx"] = v2["Period_Year"] * 100 + v2["Week_num"].astype(int)
+            v2["Capacity_Gap"] = v2["ClosingStock"] - v2["MaxCapacity"]
 
             # Sort weeks chronologically
             week_order = (
@@ -1038,13 +1039,22 @@ def run_storage_capacity():
                 "🟩 < 95% | 🟨 95%–105% | 🟥 > 105%"
             )
 
-            # Summary by Plant and Week (heatmap-like table)
-            plant_week = (
+            # Summary by Plant and Week (display Capacity_Gap, color by UtilizationPct)
+            util_pivot = (
                 v2.pivot_table(
                     index="Warehouse",
                     columns="YearWeek",
                     values="UtilizationPct",
                     aggfunc="mean",
+                )
+                .reindex(columns=week_order)
+            )
+            gap_pivot = (
+                v2.pivot_table(
+                    index="Warehouse",
+                    columns="YearWeek",
+                    values="Capacity_Gap",
+                    aggfunc="sum",
                 )
                 .reindex(columns=week_order)
             )
@@ -1058,17 +1068,74 @@ def run_storage_capacity():
                     return "background-color:#fff2cc; color:#7a5b00;"
                 return "background-color:#f8d7da; color:#7f1d1d;"
 
-            styled_plant_week = (
-                plant_week.style
-                .format("{:.0f}%")
-                .applymap(_util_style)
+            style_matrix = util_pivot.applymap(_util_style)
+            styled_gap = (
+                gap_pivot.style
+                .format("{:+,.0f}")
+                .apply(lambda _x: style_matrix, axis=None)
                 .set_table_styles(
                     [{"selector": "th", "props": [("font-weight", "600"), ("background", "#f7f7f7")]}]
                 )
             )
 
             st.subheader("🗓️ Utilization by Plant & Week")
-            st.dataframe(styled_plant_week, use_container_width=True, height=520)
+            st.dataframe(styled_gap, use_container_width=True, height=520)
+
+            # Interactive heatmap (hover tooltip shows utilization %)
+            heat_src = v2[["Warehouse", "YearWeek", "Capacity_Gap", "UtilizationPct"]].copy()
+            heat_src["Capacity_Gap"] = pd.to_numeric(heat_src["Capacity_Gap"], errors="coerce")
+            heat_src["UtilizationPct"] = pd.to_numeric(heat_src["UtilizationPct"], errors="coerce")
+
+            heat = (
+                alt.Chart(heat_src)
+                .transform_calculate(
+                    UtilBand="isValid(datum.UtilizationPct) ? (datum.UtilizationPct < 95 ? 'Under' : (datum.UtilizationPct <= 105 ? 'Near' : 'Over')) : 'NoCap'",
+                    GapLabel="isValid(datum.Capacity_Gap) ? (datum.Capacity_Gap > 0 ? '+' + format(datum.Capacity_Gap, ',.0f') : format(datum.Capacity_Gap, ',.0f')) : ''",
+                )
+                .mark_rect(stroke="#e0e0e0", strokeWidth=0.5)
+                .encode(
+                    x=alt.X("YearWeek:N", sort=week_order, title="Week"),
+                    y=alt.Y("Warehouse:N", sort=sorted(heat_src["Warehouse"].dropna().unique().tolist()), title="Plant"),
+                    color=alt.Color(
+                        "UtilBand:N",
+                        scale=alt.Scale(
+                            domain=["Under", "Near", "Over", "NoCap"],
+                            range=["#d9f2d9", "#fff2cc", "#f8d7da", "#f0f0f0"],
+                        ),
+                        legend=None,
+                    ),
+                    tooltip=[
+                        alt.Tooltip("Warehouse:N", title="Plant"),
+                        alt.Tooltip("YearWeek:N", title="Week"),
+                        alt.Tooltip("Capacity_Gap:Q", title="Over/Under", format="+,.0f"),
+                        alt.Tooltip("UtilizationPct:Q", title="Utilization %", format=".0f"),
+                    ],
+                )
+                .properties(height=28 * max(1, len(sorted(heat_src["Warehouse"].dropna().unique().tolist()))), width=1400)
+            )
+
+            heat_text = (
+                alt.Chart(heat_src)
+                .transform_calculate(
+                    GapLabel="isValid(datum.Capacity_Gap) ? (datum.Capacity_Gap > 0 ? '+' + format(datum.Capacity_Gap, ',.0f') : format(datum.Capacity_Gap, ',.0f')) : ''",
+                )
+                .mark_text(size=11, color="#1f1f1f")
+                .encode(
+                    x=alt.X("YearWeek:N", sort=week_order, title=""),
+                    y=alt.Y("Warehouse:N", sort=sorted(heat_src["Warehouse"].dropna().unique().tolist()), title=""),
+                    text=alt.Text("GapLabel:N"),
+                    tooltip=[
+                        alt.Tooltip("Warehouse:N", title="Plant"),
+                        alt.Tooltip("YearWeek:N", title="Week"),
+                        alt.Tooltip("Capacity_Gap:Q", title="Over/Under", format="+,.0f"),
+                        alt.Tooltip("UtilizationPct:Q", title="Utilization %", format=".0f"),
+                    ],
+                )
+            )
+
+            st.caption("Tip: hover a cell to see the utilization percentage.")
+            st.altair_chart(heat + heat_text, use_container_width=True)
+
 
             st.markdown("---")
 
