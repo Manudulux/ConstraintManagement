@@ -1,11 +1,5 @@
 streamlit
 pandas
-numpy
-plotly
-pyvis
-scipy
-matplotlib
-io
-re
-openpyxl
 altair
+re
+io
