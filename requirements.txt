@@ -5,3 +5,5 @@ plotly
 pyvis
 scipy
 matplotlib
+io
+re
