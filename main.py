@@ -991,7 +991,6 @@ def run_storage_capacity():
             )
 
             st.subheader("🗓️ Utilization by Plant & Week")
-            # Interactive dataframe back (sorting/search/etc). Note: Streamlit may add its own "Show data" UI for Stylers.
             st.dataframe(styled_gap, use_container_width=True, height=520)
 
             # Provide our own expanded-by-default data view
@@ -1039,7 +1038,10 @@ def run_storage_capacity():
                 )
             )
 
+            # Disable Vega-Embed action menu for this chart (removes "View data" table)
+            alt.renderers.set_embed_options(actions=False)
             st.altair_chart(heat + heat_text, use_container_width=True)
+            alt.renderers.set_embed_options(actions=True)
 
             st.markdown("---")
 
@@ -1330,4 +1332,3 @@ elif mode == "Storage Capacity Management":
 elif mode == "Mitigation proposal":
     st.title("Mitigation proposal")
     st.info("This module will be developed in a future release.")
-
