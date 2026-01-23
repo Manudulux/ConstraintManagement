@@ -470,6 +470,8 @@ def run_planning_overview_tw():
             .reset_index()
         )
         inv_weekly["YearWeekIdx"] = inv_weekly["ISO_Year"] * 100 + inv_weekly["ISO_Week"]
+        # Standardize plant matching (PlantKey = first 4 alphanumerics)
+        inv_weekly["PlantKey"] = derive_plant_key(inv_weekly["Warehouse"].astype(str))
 
     # ---- Sidebar controls ----
     st.sidebar.subheader("🏁 Starting Physical Stock (fallback per plant)")
@@ -532,10 +534,14 @@ def run_planning_overview_tw():
         pivot = pivot.sort_values(["Warehouse", "Period_Year", "Week_num"])
         pivot["YearWeekIdx"] = pivot["Period_Year"] * 100 + pivot["Week_num"].astype(int)
 
+        # Build start stock lookup by standardized PlantKey (fallback to raw Warehouse)
+        start_tmp = start_df.copy()
+        start_tmp["PlantKey"] = derive_plant_key(start_tmp["Warehouse"].astype(str))
+        start_tmp["__k"] = start_tmp["PlantKey"].fillna(start_tmp["Warehouse"].astype(str))
         start_map = dict(
             zip(
-                start_df["Warehouse"],
-                pd.to_numeric(start_df["Starting_PhysicalStock"], errors="coerce").fillna(0),
+                start_tmp["__k"],
+                pd.to_numeric(start_tmp["Starting_PhysicalStock"], errors="coerce").fillna(0),
             )
         )
         results = []
@@ -544,8 +550,15 @@ def run_planning_overview_tw():
             first_idx = int(grp.iloc[0]["YearWeekIdx"]) if len(grp) > 0 else None
             baseline = None
 
-            if not inv_weekly.empty and wh in inv_weekly["Warehouse"].unique():
-                sub = inv_weekly[inv_weekly["Warehouse"] == wh].copy()
+            # Standardize plant matching (PlantKey = first 4 alphanumerics)
+            wh_key = derive_plant_key(pd.Series([wh])).iloc[0]
+            lookup_key = wh_key if wh_key else str(wh)
+
+            if not inv_weekly.empty:
+                if wh_key and "PlantKey" in inv_weekly.columns:
+                    sub = inv_weekly[inv_weekly["PlantKey"] == wh_key].copy()
+                else:
+                    sub = inv_weekly[inv_weekly["Warehouse"] == wh].copy()
                 exact = sub[sub["YearWeekIdx"] == first_idx]
                 if not exact.empty:
                     baseline = float(exact["PhysicalStock"].iloc[0])
@@ -555,7 +568,7 @@ def run_planning_overview_tw():
                         baseline = float(prior.iloc[-1]["PhysicalStock"])  # most recent available
 
             if baseline is None:
-                baseline = float(start_map.get(wh, 0))
+                baseline = float(start_map.get(lookup_key, 0))
 
             proj_vals = []
             prev = baseline
@@ -847,6 +860,7 @@ def run_storage_capacity():
     if b3.empty:
         st.info("Please upload 0030BDD400.csv on Home.")
         return
+
     if cap.empty:
         st.info("Please upload PlantCapacity.csv on Home.")
         return
@@ -857,7 +871,9 @@ def run_storage_capacity():
     # Aggregate closing stock per plant/week
     if {"Warehouse", "Period_Year", "Week_num", "ClosingStock"}.issubset(b3.columns):
         invw = (
-            b3.groupby(["Warehouse", "Period_Year", "Week_num"], dropna=True)["ClosingStock"].sum().reset_index()
+            b3.groupby(["Warehouse", "Period_Year", "Week_num"], dropna=True)["ClosingStock"]
+            .sum()
+            .reset_index()
         )
         invw["YearWeek"] = (
             invw["Period_Year"].astype(str)
@@ -870,9 +886,9 @@ def run_storage_capacity():
         )
         return
 
-    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # ENFORCE STANDARD MATCHING RULE: PlantKey = first 4 alphanumerics
-    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     if "Warehouse" not in cap.columns:
         st.error("PlantCapacity.csv must contain a plant/warehouse column.")
         return
@@ -892,85 +908,201 @@ def run_storage_capacity():
             "PlantCapacity.csv must contain columns Plant/ Warehouse (to derive PlantKey) and MaxCapacity."
         )
         return
-    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
     merged["Capacity_Gap"] = merged["ClosingStock"] - merged["MaxCapacity"]
-    merged["Status"] = merged["Capacity_Gap"].apply(lambda x: "Above" if x > 0 else ("At" if x == 0 else "Below"))
+    merged["Status"] = merged["Capacity_Gap"].apply(
+        lambda x: "Above" if x > 0 else ("At" if x == 0 else "Below")
+    )
 
     # Sidebar filters
     plants = sorted(merged["Warehouse"].dropna().unique().tolist())
     st.sidebar.subheader("🔎 View Filters — Capacity")
     sel_plants = st.sidebar.multiselect("Plants to display", plants, default=plants)
-
-    view = merged[merged["Warehouse"].isin(sel_plants)].copy() if sel_plants else merged.copy()
-
-    st.subheader("📄 Capacity Check by Plant & Week")
-    st.dataframe(
-        view.sort_values(["Warehouse", "Period_Year", "Week_num"]),
-        use_container_width=True,
-        height=450,
+    view = (
+        merged[merged["Warehouse"].isin(sel_plants)].copy()
+        if sel_plants
+        else merged.copy()
     )
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.download_button(
-            "⬇️ Download capacity check (CSV)",
-            df_to_csv_bytes(view),
-            "capacity_check.csv",
-            mime="text/csv",
+    tab_detail, tab_summary = st.tabs(["Detail", "Over / Under Summary"])
+
+    with tab_detail:
+        st.subheader("📄 Capacity Check by Plant & Week")
+        st.dataframe(
+            view.sort_values(["Warehouse", "Period_Year", "Week_num"]),
             use_container_width=True,
+            height=450,
         )
-    with c2:
-        x = df_to_excel_bytes(view, "CapacityCheck")
-        if x:
+
+        c1, c2 = st.columns(2)
+        with c1:
             st.download_button(
-                "⬇️ Download capacity check (Excel)",
-                x,
-                "capacity_check.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "⬇️ Download capacity check (CSV)",
+                df_to_csv_bytes(view),
+                "capacity_check.csv",
+                mime="text/csv",
                 use_container_width=True,
             )
-
-    st.markdown("---")
-    st.subheader("📈 Closing Stock vs Capacity (select one plant)")
-    if not view.empty:
-        pick = st.selectbox("Plant", sorted(view["Warehouse"].unique()))
-        v = view[view["Warehouse"] == pick].sort_values(["Period_Year", "Week_num"]).copy()
-        if not v.empty:
-            # Two-series line chart: ClosingStock and MaxCapacity
-            v_long = pd.concat(
-                [
-                    v.assign(Metric="ClosingStock", Value=v["ClosingStock"])[["YearWeek", "Metric", "Value"]],
-                    v.assign(Metric="MaxCapacity", Value=v["MaxCapacity"])[["YearWeek", "Metric", "Value"]],
-                ]
-            )
-            line = (
-                alt.Chart(v_long)
-                .mark_line(point=True)
-                .encode(
-                    x=alt.X("YearWeek:N", sort=None),
-                    y="Value:Q",
-                    color="Metric:N",
-                    tooltip=["YearWeek", "Metric", "Value"],
+        with c2:
+            x = df_to_excel_bytes(view, "CapacityCheck")
+            if x:
+                st.download_button(
+                    "⬇️ Download capacity check (Excel)",
+                    x,
+                    "capacity_check.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
                 )
-                .properties(height=420, width=1400)
-            )
-            st.altair_chart(line, use_container_width=True)
 
         st.markdown("---")
-        st.subheader("🟥 Capacity Over/Under (bars)")
-        bars = (
-            alt.Chart(v)
-            .mark_bar()
-            .encode(
-                x=alt.X("YearWeek:N", sort=None),
-                y="Capacity_Gap:Q",
-                color=alt.condition(alt.datum.Capacity_Gap > 0, alt.value("#d62728"), alt.value("#2ca02c")),
-                tooltip=["YearWeek", "ClosingStock", "MaxCapacity", "Capacity_Gap", "Status"],
+        st.subheader("📈 Closing Stock vs Capacity (select one plant)")
+
+        if not view.empty:
+            pick = st.selectbox("Plant", sorted(view["Warehouse"].unique()))
+            v = (
+                view[view["Warehouse"] == pick]
+                .sort_values(["Period_Year", "Week_num"])
+                .copy()
             )
-            .properties(height=260, width=1400)
-        )
-        st.altair_chart(bars, use_container_width=True)
+
+            if not v.empty:
+                # Two-series line chart: ClosingStock and MaxCapacity
+                v_long = pd.concat(
+                    [
+                        v.assign(Metric="ClosingStock", Value=v["ClosingStock"])[
+                            ["YearWeek", "Metric", "Value"]
+                        ],
+                        v.assign(Metric="MaxCapacity", Value=v["MaxCapacity"])[
+                            ["YearWeek", "Metric", "Value"]
+                        ],
+                    ]
+                )
+                line = (
+                    alt.Chart(v_long)
+                    .mark_line(point=True)
+                    .encode(
+                        x=alt.X("YearWeek:N", sort=None),
+                        y="Value:Q",
+                        color="Metric:N",
+                        tooltip=["YearWeek", "Metric", "Value"],
+                    )
+                    .properties(height=420, width=1400)
+                )
+                st.altair_chart(line, use_container_width=True)
+
+                st.markdown("---")
+                st.subheader("🟥 Capacity Over/Under (bars)")
+                bars = (
+                    alt.Chart(v)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("YearWeek:N", sort=None),
+                        y="Capacity_Gap:Q",
+                        color=alt.condition(
+                            alt.datum.Capacity_Gap > 0,
+                            alt.value("#d62728"),
+                            alt.value("#2ca02c"),
+                        ),
+                        tooltip=[
+                            "YearWeek",
+                            "ClosingStock",
+                            "MaxCapacity",
+                            "Capacity_Gap",
+                            "Status",
+                        ],
+                    )
+                    .properties(height=260, width=1400)
+                )
+                st.altair_chart(bars, use_container_width=True)
+
+    with tab_summary:
+        if view.empty:
+            st.info("No data available for the current filter selection.")
+        else:
+            # Build utilization (% of capacity) for thresholds
+            v2 = view.copy()
+            v2["UtilizationPct"] = (v2["ClosingStock"] / v2["MaxCapacity"]).replace([pd.NA, pd.NaT, float('inf')], pd.NA) * 100
+            v2.loc[v2["MaxCapacity"] <= 0, "UtilizationPct"] = pd.NA
+            v2["YearWeekIdx"] = v2["Period_Year"] * 100 + v2["Week_num"].astype(int)
+
+            # Sort weeks chronologically
+            week_order = (
+                v2[["YearWeek", "YearWeekIdx"]]
+                .drop_duplicates()
+                .sort_values("YearWeekIdx")["YearWeek"]
+                .tolist()
+            )
+
+            st.caption(
+                "Color rules (Utilization = ClosingStock / MaxCapacity): "
+                "🟩 < 95% | 🟨 95%–105% | 🟥 > 105%"
+            )
+
+            # Summary by Plant and Week (heatmap-like table)
+            plant_week = (
+                v2.pivot_table(
+                    index="Warehouse",
+                    columns="YearWeek",
+                    values="UtilizationPct",
+                    aggfunc="mean",
+                )
+                .reindex(columns=week_order)
+            )
+
+            def _util_style(val):
+                if pd.isna(val):
+                    return ""
+                if val < 95:
+                    return "background-color:#d9f2d9; color:#1b5e20;"
+                if val <= 105:
+                    return "background-color:#fff2cc; color:#7a5b00;"
+                return "background-color:#f8d7da; color:#7f1d1d;"
+
+            styled_plant_week = (
+                plant_week.style
+                .format("{:.0f}%")
+                .applymap(_util_style)
+                .set_table_styles(
+                    [{"selector": "th", "props": [("font-weight", "600"), ("background", "#f7f7f7")]}]
+                )
+            )
+
+            st.subheader("🗓️ Utilization by Plant & Week")
+            st.dataframe(styled_plant_week, use_container_width=True, height=520)
+
+            st.markdown("---")
+
+            # Summary by Week (all selected plants) — weighted by capacity
+            week_sum = (
+                v2.groupby(["YearWeek", "YearWeekIdx"], dropna=True)
+                .agg(TotalClosingStock=("ClosingStock", "sum"), TotalCapacity=("MaxCapacity", "sum"))
+                .reset_index()
+                .sort_values("YearWeekIdx")
+            )
+            week_sum["UtilizationPct"] = (week_sum["TotalClosingStock"] / week_sum["TotalCapacity"]) * 100
+            week_sum.loc[week_sum["TotalCapacity"] <= 0, "UtilizationPct"] = pd.NA
+
+            week_disp = week_sum[["YearWeek", "TotalClosingStock", "TotalCapacity", "UtilizationPct"]].copy()
+
+            def _row_style(row):
+                v = row["UtilizationPct"]
+                return [
+                    "" if c != "UtilizationPct" else _util_style(v)
+                    for c in row.index
+                ]
+
+            styled_week = (
+                week_disp.style
+                .format({"TotalClosingStock": "{:,.0f}", "TotalCapacity": "{:,.0f}", "UtilizationPct": "{:.0f}%"})
+                .apply(_row_style, axis=1)
+                .set_table_styles(
+                    [{"selector": "th", "props": [("font-weight", "600"), ("background", "#f7f7f7")]}]
+                )
+            )
+
+            st.subheader("📊 Utilization by Week (All Selected Plants)")
+            st.dataframe(styled_week, use_container_width=True, height=420)
+
 
 # ------------------------------------------------------------
 # HOME (ALL UPLOADERS LIVE HERE)
