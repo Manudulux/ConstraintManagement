@@ -373,9 +373,9 @@ def run_npi_app():
                 st.altair_chart(line, use_container_width=True)
 
     metric_tab(tab_qi, "QualityInspectionQty", "Quality Inspection Qty")
-    metric_tab(tab_bs, "Blocked Stock Qty", "Blocked Stock Qty")
-    metric_tab(tab_rs, "Return Stock Qty", "Return Stock Qty")
-    metric_tab(tab_oa, "Overaged Inventory", "Overaged Inventory")
+    metric_tab(tab_bs, "BlockedStockQty", "Blocked Stock Qty")
+    metric_tab(tab_rs, "ReturnStockQty", "Return Stock Qty")
+    metric_tab(tab_oa, "OveragedTireQty", "Overaged Inventory")
 
 # ------------------------------------------------------------
 # MODULE 2 — PLANNING OVERVIEW (T&W Forecast Projections)
