@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import os
@@ -1276,7 +1277,9 @@ def run_mitigation_proposal():
         st.info("Please upload an Inventory file on Home (used for PhysicalStock in shipping plant).")
         return
 
-    # --- Normalize Inventory columns we need ---
+    # -----------------------------
+    # Normalize Inventory (SapCode, Warehouse/PlantID, PhysicalStock, Period)
+    # -----------------------------
     inv = inv.copy()
     inv.columns = [c.strip() for c in inv.columns]
 
@@ -1286,7 +1289,6 @@ def run_mitigation_proposal():
         if low in ("sapcode", "material", "materialcode", "materialnumber", "sku", "item"):
             inv_colmap[c] = "SapCode"
         elif low in ("warehouse", "plant", "site", "wh", "plantid"):
-            # Plant in inventory is treated as Warehouse
             inv_colmap[c] = "Warehouse"
         elif low in ("physicalstock", "physical"):
             inv_colmap[c] = "PhysicalStock"
@@ -1298,7 +1300,6 @@ def run_mitigation_proposal():
     if inv_colmap:
         inv = inv.rename(columns=inv_colmap)
 
-    # Coerce
     if "Period" in inv.columns:
         inv["Period"] = pd.to_datetime(inv["Period"], errors="coerce", infer_datetime_format=True)
 
@@ -1311,7 +1312,9 @@ def run_mitigation_proposal():
         )
         inv["PhysicalStock"] = pd.to_numeric(inv["PhysicalStock"], errors="coerce").fillna(0)
 
-    # --- Normalize BDD000 columns we need ---
+    # -----------------------------
+    # Normalize BDD000 (SapCode, PlantID columns, Week/Year, ConfirmedPOreceipt)
+    # -----------------------------
     bdd0 = bdd0.copy()
     bdd0.columns = [c.strip() for c in bdd0.columns]
 
@@ -1319,33 +1322,14 @@ def run_mitigation_proposal():
     for c in bdd0.columns:
         low = c.lower().strip().replace(' ', '').replace('_', '')
 
-        # SKU
         if low in ("sapcode", "material", "materialcode", "materialnumber", "sku", "item"):
             bdd_colmap[c] = "SapCode"
-            continue
-
-        # Plants: user indicated plant is PlantID for both ship/receive
-        # Prefer explicit ship/receive indicators if present
-        if 'plantid' in low:
-            if any(k in low for k in ("ship", "from", "source", "supplying", "sending")):
-                bdd_colmap[c] = "ShippingPlant"
-                continue
-            if any(k in low for k in ("receiv", "recv", "to", "dest", "destination")):
-                bdd_colmap[c] = "ReceivingPlant"
-                continue
-
-        # Generic plant columns
-        if low in ("shippingplant", "shipplant", "fromplant", "sourceplant", "supplyingplant", "sendingplant", "fromwarehouse", "shipfrom", "shippingplantid"):
-            bdd_colmap[c] = "ShippingPlant"
-        elif low in ("receivingplant", "recvplant", "toplant", "destinationplant", "receivingwarehouse", "towarehouse", "shipto", "receivingplantid"):
-            bdd_colmap[c] = "ReceivingPlant"
-        elif low == "plantid":
-            # ambiguous single PlantID: keep as PlantID for later fallback assignment
-            bdd_colmap[c] = "PlantID"
         elif low in ("periodyear", "year", "fiscalyear"):
             bdd_colmap[c] = "Period_Year"
         elif low in ("week", "weeknum", "wk", "periodweek"):
             bdd_colmap[c] = "Week"
+        elif low in ("period", "date", "snapshotdate"):
+            bdd_colmap[c] = "Period"
         elif low in (
             "confirmedporeceipt",
             "confirmedporeceipts",
@@ -1355,35 +1339,53 @@ def run_mitigation_proposal():
             "confirmedreceiptqty",
         ):
             bdd_colmap[c] = "ConfirmedPOreceipt"
-        elif low in ("period", "date", "snapshotdate"):
-            bdd_colmap[c] = "Period"
+        # PlantID columns (shipping and receiving) — keep as-is; user will map
+        elif low.startswith('plantid') or low == 'plantid':
+            # Do not rename yet; we will let user choose mapping
+            pass
 
     if bdd_colmap:
         bdd0 = bdd0.rename(columns=bdd_colmap)
 
-    # If we only have PlantID-style columns, try to infer ship/receive from duplicates
-    if "ShippingPlant" not in bdd0.columns or "ReceivingPlant" not in bdd0.columns:
-        plantid_cols = [c for c in bdd0.columns if c.lower().replace(' ', '').replace('_', '').startswith('plantid')]
-        # Pandas may rename duplicates as PlantID.1 etc.
-        if len(plantid_cols) >= 2:
-            if "ShippingPlant" not in bdd0.columns:
-                bdd0 = bdd0.rename(columns={plantid_cols[0]: "ShippingPlant"})
-            if "ReceivingPlant" not in bdd0.columns:
-                bdd0 = bdd0.rename(columns={plantid_cols[1]: "ReceivingPlant"})
+    # Required basics
+    if "SapCode" not in bdd0.columns or "ConfirmedPOreceipt" not in bdd0.columns:
+        st.error("000BDD400.csv must contain SapCode and ConfirmedPOreceipt (name may vary).")
+        with st.expander("Show detected columns"):
+            st.write(sorted(bdd0.columns.tolist()))
+        return
 
-    # Ensure required core columns exist
-    required = ["SapCode", "ConfirmedPOreceipt", "ReceivingPlant", "ShippingPlant"]
-    missing_req = [c for c in required if c not in bdd0.columns]
-    if missing_req:
+    # Identify PlantID columns
+    plantid_cols = [c for c in bdd0.columns if str(c).lower().replace(' ', '').replace('_', '').startswith('plantid')]
+    if len(plantid_cols) < 2:
         st.error(
-            "000BDD400.csv is missing required columns: " + ", ".join(missing_req) +
-            ". Expected PlantID columns for Shipping/Receiving, SapCode, and ConfirmedPOreceipt."
+            "Could not detect two PlantID columns (shipping and receiving) in 000BDD400.csv. "
+            "Expected columns like PlantID / PlantID.1 or ShippingPlantID / ReceivingPlantID."
         )
         with st.expander("Show detected columns"):
             st.write(sorted(bdd0.columns.tolist()))
         return
 
-    # Parse week/year or derive from Period
+    # Sidebar controls
+    st.sidebar.subheader("🔧 Mitigation filters")
+
+    ship_col = st.sidebar.selectbox("Shipping Plant column", plantid_cols, index=0)
+    recv_col = st.sidebar.selectbox("Receiving Plant column", plantid_cols, index=1 if len(plantid_cols) > 1 else 0)
+
+    # Create standardized columns
+    bdd0["ShippingPlant"] = bdd0[ship_col].astype(str)
+    bdd0["ReceivingPlant"] = bdd0[recv_col].astype(str)
+
+    ship_plants = sorted(pd.Series(bdd0["ShippingPlant"]).dropna().unique().tolist())
+    recv_plants = sorted(pd.Series(bdd0["ReceivingPlant"]).dropna().unique().tolist())
+
+    ship = st.sidebar.selectbox("Shipping PlantID", ship_plants, index=0) if ship_plants else st.sidebar.text_input("Shipping PlantID")
+    recv = st.sidebar.selectbox("Receiving PlantID", recv_plants, index=0) if recv_plants else st.sidebar.text_input("Receiving PlantID")
+
+    start_date = st.sidebar.date_input("Start date", value=pd.Timestamp.today().date())
+    horizon_weeks = st.sidebar.number_input("Horizon (weeks)", min_value=1, max_value=52, value=6)
+    top_n = st.sidebar.number_input("Show top N SKUs", min_value=10, max_value=5000, value=200)
+
+    # Week parsing / derive YearWeekIdx
     if "Period" in bdd0.columns and ("Period_Year" not in bdd0.columns or "Week" not in bdd0.columns):
         bdd0["Period"] = pd.to_datetime(bdd0["Period"], errors="coerce", infer_datetime_format=True)
         iso = bdd0["Period"].dt.isocalendar()
@@ -1392,9 +1394,7 @@ def run_mitigation_proposal():
     else:
         if "Week" in bdd0.columns:
             bdd0["Week"] = bdd0["Week"].astype(str).str.strip()
-            bdd0["Week_num"] = bdd0["Week"].apply(
-                lambda s: int(re.sub(r"[^\d]", "", s)) if re.search(r"\d+", str(s)) else None
-            )
+            bdd0["Week_num"] = bdd0["Week"].apply(lambda s: int(re.sub(r"[^\d]", "", s)) if re.search(r"\d+", str(s)) else None)
 
     if "Period_Year" in bdd0.columns and "Week_num" in bdd0.columns:
         bdd0["YearWeekIdx"] = pd.to_numeric(bdd0["Period_Year"], errors="coerce") * 100 + pd.to_numeric(bdd0["Week_num"], errors="coerce")
@@ -1408,20 +1408,7 @@ def run_mitigation_proposal():
     )
     bdd0["ConfirmedPOreceipt"] = pd.to_numeric(bdd0["ConfirmedPOreceipt"], errors="coerce").fillna(0)
 
-    # --- Controls ---
-    st.sidebar.subheader("🔧 Mitigation filters")
-
-    ship_plants = sorted(pd.Series(bdd0["ShippingPlant"]).dropna().astype(str).unique().tolist())
-    recv_plants = sorted(pd.Series(bdd0["ReceivingPlant"]).dropna().astype(str).unique().tolist())
-
-    ship = st.sidebar.selectbox("Shipping plant (PlantID)", ship_plants, index=0) if ship_plants else st.sidebar.text_input("Shipping plant (PlantID)")
-    recv = st.sidebar.selectbox("Receiving plant (PlantID)", recv_plants, index=0) if recv_plants else st.sidebar.text_input("Receiving plant (PlantID)")
-
-    start_date = st.sidebar.date_input("Start date", value=pd.Timestamp.today().date())
-    horizon_weeks = st.sidebar.number_input("Horizon (weeks)", min_value=1, max_value=52, value=6)
-    top_n = st.sidebar.number_input("Show top N SKUs", min_value=10, max_value=5000, value=200)
-
-    # Build list of ISO year/week for the horizon
+    # Build horizon weeks list (ISO weeks)
     start_dt = pd.Timestamp(start_date)
     monday = start_dt - pd.to_timedelta(start_dt.weekday(), unit='D')
     weeks = []
@@ -1450,9 +1437,9 @@ def run_mitigation_proposal():
             st.dataframe(receipts.head(200), use_container_width=True)
         return
 
-    # Compute shipping plant PhysicalStock (latest snapshot available)
+    # Shipping PhysicalStock (latest snapshot)
     if not {"SapCode", "Warehouse", "PhysicalStock"}.issubset(inv.columns):
-        st.error("Inventory file must contain SapCode, Warehouse/PlantID, and PhysicalStock to compute shipping stock.")
+        st.error("Inventory file must contain SapCode, Warehouse/PlantID, and PhysicalStock.")
         with st.expander("Show detected inventory columns"):
             st.write(sorted(inv.columns.tolist()))
         return
@@ -1462,12 +1449,15 @@ def run_mitigation_proposal():
     if not stock.empty and "Period" in stock.columns and stock["Period"].notna().any():
         stock = stock[stock["Period"] == stock["Period"].max()].copy()
 
-    stock_agg = (
-        stock.groupby("SapCode", dropna=True)["PhysicalStock"].sum().reset_index()
-        .rename(columns={"PhysicalStock": "Shipping_PhysicalStock"})
-    ) if not stock.empty else pd.DataFrame({"SapCode": [], "Shipping_PhysicalStock": []})
+    if stock.empty:
+        stock_agg = pd.DataFrame({"SapCode": [], "Shipping_PhysicalStock": []})
+    else:
+        stock_agg = (
+            stock.groupby("SapCode", dropna=True)["PhysicalStock"].sum().reset_index()
+            .rename(columns={"PhysicalStock": "Shipping_PhysicalStock"})
+        )
 
-    # Add description if present
+    # Optional description
     desc = pd.DataFrame()
     if "MaterialDescription" in inv.columns and "SapCode" in inv.columns:
         tmp = inv.copy()
@@ -1476,7 +1466,7 @@ def run_mitigation_proposal():
         desc = tmp[["SapCode", "MaterialDescription"]].drop_duplicates("SapCode")
 
     out = by_sku.merge(stock_agg, on="SapCode", how="left")
-    out["Shipping_PhysicalStock"] = out.get("Shipping_PhysicalStock", 0).fillna(0)
+    out["Shipping_PhysicalStock"] = out["Shipping_PhysicalStock"].fillna(0)
     if not desc.empty:
         out = out.merge(desc, on="SapCode", how="left")
 
