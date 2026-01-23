@@ -1081,7 +1081,7 @@ def run_storage_capacity():
             st.subheader("🗓️ Utilization by Plant & Week")
             st.dataframe(styled_gap, use_container_width=True, height=520)
 
-            # Interactive heatmap: values are Over/Under, colors follow utilization %, tooltip shows utilization %
+            # Heatmap (no tooltips)
             plant_order = sorted(v2["Warehouse"].dropna().unique().tolist())
             heat_src = v2[["Warehouse", "YearWeek", "Capacity_Gap", "UtilizationPct"]].copy()
             heat_src["Capacity_Gap"] = pd.to_numeric(heat_src["Capacity_Gap"], errors="coerce")
@@ -1091,7 +1091,6 @@ def run_storage_capacity():
                 alt.Chart(heat_src)
                 .transform_calculate(
                     UtilBand="isValid(datum.UtilizationPct) ? (datum.UtilizationPct < 95 ? 'Under' : (datum.UtilizationPct <= 105 ? 'Near' : 'Over')) : 'NoCap'",
-                    UtilLabel="isValid(datum.UtilizationPct) ? format(datum.UtilizationPct, '.0f') + '%' : ''",
                     GapLabel="isValid(datum.Capacity_Gap) ? (datum.Capacity_Gap > 0 ? '+' + format(datum.Capacity_Gap, ',.0f') : format(datum.Capacity_Gap, ',.0f')) : ''",
                 )
                 .mark_rect(stroke="#e0e0e0", strokeWidth=0.5)
@@ -1106,7 +1105,6 @@ def run_storage_capacity():
                         ),
                         legend=None,
                     ),
-                    tooltip=[alt.Tooltip("UtilLabel:N", title="Utilization")],
                 )
                 .properties(height=28 * max(1, len(plant_order)), width=1400)
             )
@@ -1115,14 +1113,12 @@ def run_storage_capacity():
                 alt.Chart(heat_src)
                 .transform_calculate(
                     GapLabel="isValid(datum.Capacity_Gap) ? (datum.Capacity_Gap > 0 ? '+' + format(datum.Capacity_Gap, ',.0f') : format(datum.Capacity_Gap, ',.0f')) : ''",
-                    UtilLabel="isValid(datum.UtilizationPct) ? format(datum.UtilizationPct, '.0f') + '%' : ''",
                 )
                 .mark_text(size=11, color="#1f1f1f")
                 .encode(
                     x=alt.X("YearWeek:N", sort=week_order, title=""),
                     y=alt.Y("Warehouse:N", sort=plant_order, title=""),
                     text=alt.Text("GapLabel:N"),
-                    tooltip=[alt.Tooltip("UtilLabel:N", title="Utilization")],
                 )
             )
 
@@ -1327,32 +1323,4 @@ elif mode == "Storage Capacity Management":
     run_storage_capacity()
 elif mode == "Mitigation proposal":
     st.title("Mitigation proposal")
-
-    # Visual heartbeat indicator (CSS pulse) to show the app is alive
-    st.markdown(
-        """
-        <style>
-        .pulse-wrap {display:flex; align-items:center; gap:10px; margin: 6px 0 14px 0;}
-        .pulse-dot {width:12px; height:12px; border-radius:50%; background:#22c55e; box-shadow: 0 0 0 rgba(34,197,94, 0.6);
-                    animation: pulse 1.6s infinite;}
-        @keyframes pulse {
-            0% {box-shadow: 0 0 0 0 rgba(34,197,94, 0.65);} 
-            70% {box-shadow: 0 0 0 14px rgba(34,197,94, 0);} 
-            100% {box-shadow: 0 0 0 0 rgba(34,197,94, 0);} 
-        }
-        .pulse-text {font-weight:600; color:#0f172a;}
-        .pulse-sub {color:#475569; font-size:0.92rem; margin-top:-2px;}
-        </style>
-        <div class="pulse-wrap">
-            <div class="pulse-dot"></div>
-            <div>
-                <div class="pulse-text">System status: Online</div>
-                <div class="pulse-sub">Dashboard loaded successfully — ready to build mitigation scenarios.</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
     st.info("This module will be developed in a future release.")
-
