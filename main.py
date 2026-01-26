@@ -1264,56 +1264,82 @@ def run_home():
 def run_mitigation_proposal():
     st.header("💡 Mitigation Proposal")
     
-    # 1. Robust Data Loading
-    @st.cache_data
-    def load_clean_data():
-        df = pd.read_csv("0030BDD400.csv", dtype={'SapCode': str, 'PlantID': str, 'InternalTimeStamp': str})
-        df.columns = [str(c).strip() for c in df.columns]
-        for col in ['PlantID', 'InternalTimeStamp', 'SapCode', 'MaterialDescription', 'Plant']:
-            if col in df.columns:
-                df[col] = df[col].astype(str).str.strip()
-        for col in ['ConfirmedPRreceipt', 'Daysofcoverage', 'ClosingStock']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        return df
-
-    df = load_clean_data()
-
-    # 2. Selection UI
-    all_plants = sorted(df['PlantID'].unique().tolist())
-    plant_options = [f"{pid} - {df[df['PlantID']==pid]['Plant'].iloc[0]}" for pid in all_plants]
-    selected_label = st.selectbox("Select Plant", plant_options)
-    sel_pid = selected_label.split(" - ")[0]
-
-    df_plant = df[df['PlantID'] == sel_pid]
-    available_periods = sorted(df_plant['InternalTimeStamp'].unique().tolist())
-    selected_periods = st.multiselect("Select Period(s)", available_periods, default=[available_periods[0]])
-
-    if not selected_periods:
-        st.warning("Please select at least one period.")
+    # --- DIAGNOSTIC AND LOADING ---
+    file_path = "0030BDD400.csv"
+    
+    if not os.path.exists(file_path):
+        st.error(f"File {file_path} not found in the directory.")
         return
 
-    # 3. Calculation Logic
-    first_period = sorted([p for p in available_periods if p in selected_periods])[0]
+    # Loading without cache initially to debug "missing" plants
+    try:
+        df = pd.read_csv(file_path, engine='python', dtype={'SapCode': str, 'PlantID': str})
+        # Clean headers and basic data
+        df.columns = [str(c).strip() for c in df.columns]
+        df['PlantID'] = df['PlantID'].fillna('Unknown').astype(str).str.strip()
+        df['InternalTimeStamp'] = df['InternalTimeStamp'].fillna('Unknown').astype(str).str.strip()
+        
+        # UI Diagnostics
+        with st.expander("🔍 Data Diagnostics (Click to see file stats)"):
+            st.write(f"**Total Rows:** {len(df)}")
+            st.write(f"**Unique PlantIDs found:** {sorted(df['PlantID'].unique().tolist())}")
+            if st.button("♻️ Force Clear Cache & Reload"):
+                st.cache_data.clear()
+                st.rerun()
+    except Exception as e:
+        st.error(f"Error reading file: {e}")
+        return
+
+    # --- SELECTION UI ---
+    # 1. Plant Selection
+    all_pids = sorted(df['PlantID'].unique().tolist())
+    # Remove 'Unknown' or empty strings if they exist
+    all_pids = [p for p in all_pids if p and p != 'Unknown']
     
-    # Sum receipts across selection
-    df_range = df_plant[df_plant['InternalTimeStamp'].isin(selected_periods)]
-    agg_receipts = df_range.groupby('SapCode').agg({
+    selected_plant = st.selectbox("1️⃣ Select Plant ID", all_pids)
+    
+    # Filter for selected plant
+    df_plant = df[df['PlantID'] == selected_plant]
+
+    # 2. Period Selection
+    all_periods = sorted(df_plant['InternalTimeStamp'].unique().tolist())
+    selected_periods = st.multiselect(f"2️⃣ Select Period(s) for {selected_plant}", all_periods)
+
+    if not selected_periods:
+        st.info("Select at least one period to view rankings.")
+        return
+
+    # --- CALCULATION ---
+    # Sort periods chronologically as they appear in the data
+    sorted_selected = [p for p in all_periods if p in selected_periods]
+    first_period = sorted_selected[0]
+
+    # Aggregation
+    df_filtered = df_plant[df_plant['InternalTimeStamp'].isin(selected_periods)]
+    
+    # Grouping to sum receipts
+    agg_receipts = df_filtered.groupby('SapCode').agg({
         'ConfirmedPRreceipt': 'sum',
         'MaterialDescription': 'first'
     }).reset_index()
 
-    # Get stock/DOC from the first period only
-    df_first = df_plant[df_plant['InternalTimeStamp'] == first_period][['SapCode', 'Daysofcoverage', 'ClosingStock']]
-    
-    # Final Merge & Sort
-    result = pd.merge(agg_receipts, df_first, on='SapCode', how='left').fillna(0)
+    # Getting stock from the first period
+    df_stock = df_plant[df_plant['InternalTimeStamp'] == first_period][['SapCode', 'Daysofcoverage', 'ClosingStock']]
+    df_stock = df_stock.groupby('SapCode').first().reset_index()
+
+    # Final Merge
+    result = pd.merge(agg_receipts, df_stock, on='SapCode', how='left').fillna(0)
     result = result.sort_values(by='ConfirmedPRreceipt', ascending=False)
 
-    # 4. Display
-    st.write(f"Displaying **{len(result)}** SAP codes for plant **{sel_pid}**.")
-    st.dataframe(result[['SapCode', 'MaterialDescription', 'ConfirmedPRreceipt', 'Daysofcoverage', 'ClosingStock']], use_container_width=True)
+    # --- RESULTS ---
+    st.subheader(f"📊 Mitigation Ranking: {selected_plant}")
+    st.caption(f"Summing PR Receipt across {len(selected_periods)} periods. Stock/Coverage shown for {first_period}.")
+    
+    display_cols = ['SapCode', 'MaterialDescription', 'ConfirmedPRreceipt', 'Daysofcoverage', 'ClosingStock']
+    st.dataframe(result[display_cols], use_container_width=True)
 
+    csv_data = result[display_cols].to_csv(index=False).encode('utf-8')
+    st.download_button("⬇️ Download CSV", csv_data, f"mitigation_{selected_plant}.csv", "text/csv")
 
 
 
