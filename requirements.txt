@@ -3,4 +3,3 @@ pandas
 altair
 openpyxl
 xlsxwriter
-csv
