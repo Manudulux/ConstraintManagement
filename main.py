@@ -1263,21 +1263,36 @@ def run_home():
 # ------------------------------------------------------------
 def run_mitigation_proposal():
     st.header("💡 Mitigation Proposal")
-    st.info("Select a Plant and Period(s) to view SAP codes ranked by Confirmed PR receipt.")
-
+    
     # Load data
     try:
         df = read_csv_robust("0030BDD400.csv")
+        
+        # --- DATA CLEANING LAYER ---
+        # 1. Clean column names (remove hidden spaces in headers)
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # 2. Clean key columns (remove hidden spaces in data)
+        for col in ['PlantID', 'InternalTimeStamp', 'SapCode', 'MaterialDescription']:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.strip()
+        
+        # 3. Ensure numeric columns are actually numbers
+        for col in ['ConfirmedPRreceipt', 'Daysofcoverage', 'ClosingStock']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        # ---------------------------
+
     except Exception as e:
-        st.error(f"Error loading 0030BDD400.csv: {e}")
+        st.error(f"Error loading or cleaning 0030BDD400.csv: {e}")
         return
 
     # 1. Plant Selection
     if 'PlantID' not in df.columns:
-        st.error("Column 'PlantID' not found in the CSV.")
+        st.error("Column 'PlantID' not found. Available columns: " + ", ".join(df.columns))
         return
     
-    plant_list = sorted(df['PlantID'].unique().astype(str))
+    plant_list = sorted([p for p in df['PlantID'].unique() if p and p != 'nan'])
     selected_plant = st.selectbox("Select Plant ID", plant_list)
 
     # Filter data for the selected plant
@@ -1285,18 +1300,18 @@ def run_mitigation_proposal():
 
     # 2. Period Selection
     if 'InternalTimeStamp' not in df.columns:
-        st.error("Column 'InternalTimeStamp' not found in the CSV.")
+        st.error("Column 'InternalTimeStamp' not found.")
         return
         
-    # Get sorted list of periods available for this plant
-    period_list = sorted(df_plant['InternalTimeStamp'].unique().astype(str))
+    # Get all periods for this plant
+    period_list = sorted([t for t in df_plant['InternalTimeStamp'].unique() if t and t != 'nan'])
     selected_periods = st.multiselect("Select Period(s)", period_list)
 
     if not selected_periods:
         st.warning("Please select at least one period.")
         return
 
-    # Identify the "first period" in the user's selection
+    # Identify the "first period" (earliest) in selection
     sorted_selected = [p for p in period_list if p in selected_periods]
     first_period = sorted_selected[0]
 
@@ -1304,35 +1319,27 @@ def run_mitigation_proposal():
     df_first = df_plant[df_plant['InternalTimeStamp'] == first_period][['SapCode', 'Daysofcoverage', 'ClosingStock']]
     df_first = df_first.drop_duplicates(subset=['SapCode'])
 
-    # 4. Aggregation for the selected periods - Summing ConfirmedPRreceipt
+    # 4. Aggregation for all selected periods
     df_selected = df_plant[df_plant['InternalTimeStamp'].isin(selected_periods)]
     
-    # Group by SapCode and MaterialDescription
     agg_df = df_selected.groupby(['SapCode', 'MaterialDescription'], as_index=False).agg({
         'ConfirmedPRreceipt': 'sum'
     })
 
-    # 5. Merge calculations with contextual data (DOC and Stock)
+    # 5. Merge and Sort
     result_df = pd.merge(agg_df, df_first, on='SapCode', how='left')
-
-    # 6. Sorting descending by ConfirmedPRreceipt
     result_df = result_df.sort_values(by='ConfirmedPRreceipt', ascending=False)
 
-    # 7. Display Results
-    st.subheader(f"Mitigation Ranking for {selected_plant}")
-    st.markdown(f"**Reference Period:** {first_period} (used for Days of Coverage and Closing Stock)")
+    # 6. Display
+    st.subheader(f"Mitigation Ranking: {selected_plant}")
+    st.write(f"Aggregating {len(selected_periods)} period(s). Reference for Stock/DOC: **{first_period}**")
     
     display_cols = ['SapCode', 'MaterialDescription', 'ConfirmedPRreceipt', 'Daysofcoverage', 'ClosingStock']
     st.dataframe(result_df[display_cols], use_container_width=True)
 
-    # Download button
+    # Download
     csv_bytes = result_df[display_cols].to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="⬇️ Download mitigation proposal (CSV)",
-        data=csv_bytes,
-        file_name=f"mitigation_proposal_{selected_plant}.csv",
-        mime='text/csv',
-    )
+    st.download_button("⬇️ Download Result (CSV)", csv_bytes, f"mitigation_{selected_plant}.csv", "text/csv")
 
 # NAVIGATION
 # ------------------------------------------------------------
