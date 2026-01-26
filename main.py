@@ -1263,7 +1263,7 @@ def run_home():
 # ------------------------------------------------------------
 def run_mitigation_proposal():
     st.header("💡 Mitigation Proposal")
-    st.info("Select a Plant and Period(s) to view SAP codes ranked by Confirmed PR to distribute.")
+    st.info("Select a Plant and Period(s) to view SAP codes ranked by Confirmed PR receipt.")
 
     # Load data
     try:
@@ -1304,25 +1304,25 @@ def run_mitigation_proposal():
     df_first = df_plant[df_plant['InternalTimeStamp'] == first_period][['SapCode', 'Daysofcoverage', 'ClosingStock']]
     df_first = df_first.drop_duplicates(subset=['SapCode'])
 
-    # 4. Aggregation for the selected periods
+    # 4. Aggregation for the selected periods - Summing ConfirmedPRreceipt
     df_selected = df_plant[df_plant['InternalTimeStamp'].isin(selected_periods)]
     
-    # Group by SapCode and MaterialDescription, summing the PR to distribute
+    # Group by SapCode and MaterialDescription
     agg_df = df_selected.groupby(['SapCode', 'MaterialDescription'], as_index=False).agg({
-        'ConfirmedPRtodistribute': 'sum'
+        'ConfirmedPRreceipt': 'sum'
     })
 
     # 5. Merge calculations with contextual data (DOC and Stock)
     result_df = pd.merge(agg_df, df_first, on='SapCode', how='left')
 
-    # 6. Sorting descending by ConfirmedPRtodistribute
-    result_df = result_df.sort_values(by='ConfirmedPRtodistribute', ascending=False)
+    # 6. Sorting descending by ConfirmedPRreceipt
+    result_df = result_df.sort_values(by='ConfirmedPRreceipt', ascending=False)
 
     # 7. Display Results
     st.subheader(f"Mitigation Ranking for {selected_plant}")
     st.markdown(f"**Reference Period:** {first_period} (used for Days of Coverage and Closing Stock)")
     
-    display_cols = ['SapCode', 'MaterialDescription', 'ConfirmedPRtodistribute', 'Daysofcoverage', 'ClosingStock']
+    display_cols = ['SapCode', 'MaterialDescription', 'ConfirmedPRreceipt', 'Daysofcoverage', 'ClosingStock']
     st.dataframe(result_df[display_cols], use_container_width=True)
 
     # Download button
