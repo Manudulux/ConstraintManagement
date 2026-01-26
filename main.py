@@ -1262,257 +1262,77 @@ def run_home():
 # MODULE 5 — MITIGATION PROPOSAL
 # ------------------------------------------------------------
 def run_mitigation_proposal():
-    st.title("Mitigation proposal")
+    st.header("💡 Mitigation Proposal")
+    st.info("Select a Plant and Period(s) to view SAP codes ranked by Confirmed PR to distribute.")
 
-    # Data sources
-    inv = get_inventory_df_from_state()
-    bdd0 = get_bdd000_df_from_state()
-
-    if bdd0.empty:
-        st.info("Please upload 000BDD400.csv on Home (used for confirmed PO receipts).")
+    # Load data
+    try:
+        df = read_csv_robust("0030BDD400.csv")
+    except Exception as e:
+        st.error(f"Error loading 0030BDD400.csv: {e}")
         return
 
-    if inv.empty:
-        st.info("Please upload an Inventory file on Home (used for PhysicalStock in shipping plant).")
+    # 1. Plant Selection
+    if 'PlantID' not in df.columns:
+        st.error("Column 'PlantID' not found in the CSV.")
+        return
+    
+    plant_list = sorted(df['PlantID'].unique().astype(str))
+    selected_plant = st.selectbox("Select Plant ID", plant_list)
+
+    # Filter data for the selected plant
+    df_plant = df[df['PlantID'] == selected_plant]
+
+    # 2. Period Selection
+    if 'InternalTimeStamp' not in df.columns:
+        st.error("Column 'InternalTimeStamp' not found in the CSV.")
+        return
+        
+    # Get sorted list of periods available for this plant
+    period_list = sorted(df_plant['InternalTimeStamp'].unique().astype(str))
+    selected_periods = st.multiselect("Select Period(s)", period_list)
+
+    if not selected_periods:
+        st.warning("Please select at least one period.")
         return
 
-    # --- Normalize Inventory columns we need ---
-    inv = inv.copy()
-    inv.columns = [c.strip() for c in inv.columns]
+    # Identify the "first period" in the user's selection
+    sorted_selected = [p for p in period_list if p in selected_periods]
+    first_period = sorted_selected[0]
 
-    inv_colmap = {}
-    for c in inv.columns:
-        low = c.lower().strip().replace(' ', '').replace('_', '')
-        if low in ("sapcode", "material", "materialcode", "materialnumber", "sku", "item"):
-            inv_colmap[c] = "SapCode"
-        elif low in ("warehouse", "plant", "site", "wh", "plantid"):
-            # Plant in inventory is treated as Warehouse
-            inv_colmap[c] = "Warehouse"
-        elif low in ("physicalstock", "physical"):
-            inv_colmap[c] = "PhysicalStock"
-        elif low in ("period", "date", "snapshotdate"):
-            inv_colmap[c] = "Period"
-        elif low in ("materialdescription", "description", "materialdesc"):
-            inv_colmap[c] = "MaterialDescription"
+    # 3. Extract Daysofcoverage and ClosingStock from the first selected period
+    df_first = df_plant[df_plant['InternalTimeStamp'] == first_period][['SapCode', 'Daysofcoverage', 'ClosingStock']]
+    df_first = df_first.drop_duplicates(subset=['SapCode'])
 
-    if inv_colmap:
-        inv = inv.rename(columns=inv_colmap)
+    # 4. Aggregation for the selected periods
+    df_selected = df_plant[df_plant['InternalTimeStamp'].isin(selected_periods)]
+    
+    # Group by SapCode and MaterialDescription, summing the PR to distribute
+    agg_df = df_selected.groupby(['SapCode', 'MaterialDescription'], as_index=False).agg({
+        'ConfirmedPRtodistribute': 'sum'
+    })
 
-    # Coerce
-    if "Period" in inv.columns:
-        inv["Period"] = pd.to_datetime(inv["Period"], errors="coerce", infer_datetime_format=True)
+    # 5. Merge calculations with contextual data (DOC and Stock)
+    result_df = pd.merge(agg_df, df_first, on='SapCode', how='left')
 
-    if "PhysicalStock" in inv.columns:
-        inv["PhysicalStock"] = (
-            inv["PhysicalStock"].astype(str)
-            .str.replace(" ", "", regex=False)
-            .str.replace(",", "", regex=False)
-            .str.strip()
-        )
-        inv["PhysicalStock"] = pd.to_numeric(inv["PhysicalStock"], errors="coerce").fillna(0)
+    # 6. Sorting descending by ConfirmedPRtodistribute
+    result_df = result_df.sort_values(by='ConfirmedPRtodistribute', ascending=False)
 
-    # --- Normalize BDD000 columns we need ---
-    bdd0 = bdd0.copy()
-    bdd0.columns = [c.strip() for c in bdd0.columns]
+    # 7. Display Results
+    st.subheader(f"Mitigation Ranking for {selected_plant}")
+    st.markdown(f"**Reference Period:** {first_period} (used for Days of Coverage and Closing Stock)")
+    
+    display_cols = ['SapCode', 'MaterialDescription', 'ConfirmedPRtodistribute', 'Daysofcoverage', 'ClosingStock']
+    st.dataframe(result_df[display_cols], use_container_width=True)
 
-    bdd_colmap = {}
-    for c in bdd0.columns:
-        low = c.lower().strip().replace(' ', '').replace('_', '')
-
-        # SKU
-        if low in ("sapcode", "material", "materialcode", "materialnumber", "sku", "item"):
-            bdd_colmap[c] = "SapCode"
-            continue
-
-        # Plants: user indicated plant is PlantID for both ship/receive
-        # Prefer explicit ship/receive indicators if present
-        if 'plantid' in low:
-            if any(k in low for k in ("ship", "from", "source", "supplying", "sending")):
-                bdd_colmap[c] = "ShippingPlant"
-                continue
-            if any(k in low for k in ("receiv", "recv", "to", "dest", "destination")):
-                bdd_colmap[c] = "ReceivingPlant"
-                continue
-
-        # Generic plant columns
-        if low in ("shippingplant", "shipplant", "fromplant", "sourceplant", "supplyingplant", "sendingplant", "fromwarehouse", "shipfrom", "shippingplantid"):
-            bdd_colmap[c] = "ShippingPlant"
-        elif low in ("receivingplant", "recvplant", "toplant", "destinationplant", "receivingwarehouse", "towarehouse", "shipto", "receivingplantid"):
-            bdd_colmap[c] = "ReceivingPlant"
-        elif low == "plantid":
-            # ambiguous single PlantID: keep as PlantID for later fallback assignment
-            bdd_colmap[c] = "PlantID"
-        elif low in ("periodyear", "year", "fiscalyear"):
-            bdd_colmap[c] = "Period_Year"
-        elif low in ("week", "weeknum", "wk", "periodweek"):
-            bdd_colmap[c] = "Week"
-        elif low in (
-            "confirmedporeceipt",
-            "confirmedporeceipts",
-            "confirmedporeceiptqty",
-            "confirmedporeceiptquantity",
-            "confirmedreceipt",
-            "confirmedreceiptqty",
-        ):
-            bdd_colmap[c] = "ConfirmedPOreceipt"
-        elif low in ("period", "date", "snapshotdate"):
-            bdd_colmap[c] = "Period"
-
-    if bdd_colmap:
-        bdd0 = bdd0.rename(columns=bdd_colmap)
-
-    # If we only have PlantID-style columns, try to infer ship/receive from duplicates
-    if "ShippingPlant" not in bdd0.columns or "ReceivingPlant" not in bdd0.columns:
-        plantid_cols = [c for c in bdd0.columns if c.lower().replace(' ', '').replace('_', '').startswith('plantid')]
-        # Pandas may rename duplicates as PlantID.1 etc.
-        if len(plantid_cols) >= 2:
-            if "ShippingPlant" not in bdd0.columns:
-                bdd0 = bdd0.rename(columns={plantid_cols[0]: "ShippingPlant"})
-            if "ReceivingPlant" not in bdd0.columns:
-                bdd0 = bdd0.rename(columns={plantid_cols[1]: "ReceivingPlant"})
-
-    # Ensure required core columns exist
-    required = ["SapCode", "ConfirmedPOreceipt", "ReceivingPlant", "ShippingPlant"]
-    missing_req = [c for c in required if c not in bdd0.columns]
-    if missing_req:
-        st.error(
-            "000BDD400.csv is missing required columns: " + ", ".join(missing_req) +
-            ". Expected PlantID columns for Shipping/Receiving, SapCode, and ConfirmedPOreceipt."
-        )
-        with st.expander("Show detected columns"):
-            st.write(sorted(bdd0.columns.tolist()))
-        return
-
-    # Parse week/year or derive from Period
-    if "Period" in bdd0.columns and ("Period_Year" not in bdd0.columns or "Week" not in bdd0.columns):
-        bdd0["Period"] = pd.to_datetime(bdd0["Period"], errors="coerce", infer_datetime_format=True)
-        iso = bdd0["Period"].dt.isocalendar()
-        bdd0["Period_Year"] = iso.year
-        bdd0["Week_num"] = iso.week
-    else:
-        if "Week" in bdd0.columns:
-            bdd0["Week"] = bdd0["Week"].astype(str).str.strip()
-            bdd0["Week_num"] = bdd0["Week"].apply(
-                lambda s: int(re.sub(r"[^\d]", "", s)) if re.search(r"\d+", str(s)) else None
-            )
-
-    if "Period_Year" in bdd0.columns and "Week_num" in bdd0.columns:
-        bdd0["YearWeekIdx"] = pd.to_numeric(bdd0["Period_Year"], errors="coerce") * 100 + pd.to_numeric(bdd0["Week_num"], errors="coerce")
-
-    # Parse numeric confirmed receipts
-    bdd0["ConfirmedPOreceipt"] = (
-        bdd0["ConfirmedPOreceipt"].astype(str)
-        .str.replace(" ", "", regex=False)
-        .str.replace(",", "", regex=False)
-        .str.strip()
+    # Download button
+    csv_bytes = result_df[display_cols].to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="⬇️ Download mitigation proposal (CSV)",
+        data=csv_bytes,
+        file_name=f"mitigation_proposal_{selected_plant}.csv",
+        mime='text/csv',
     )
-    bdd0["ConfirmedPOreceipt"] = pd.to_numeric(bdd0["ConfirmedPOreceipt"], errors="coerce").fillna(0)
-
-    # --- Controls ---
-    st.sidebar.subheader("🔧 Mitigation filters")
-
-    ship_plants = sorted(pd.Series(bdd0["ShippingPlant"]).dropna().astype(str).unique().tolist())
-    recv_plants = sorted(pd.Series(bdd0["ReceivingPlant"]).dropna().astype(str).unique().tolist())
-
-    ship = st.sidebar.selectbox("Shipping plant (PlantID)", ship_plants, index=0) if ship_plants else st.sidebar.text_input("Shipping plant (PlantID)")
-    recv = st.sidebar.selectbox("Receiving plant (PlantID)", recv_plants, index=0) if recv_plants else st.sidebar.text_input("Receiving plant (PlantID)")
-
-    start_date = st.sidebar.date_input("Start date", value=pd.Timestamp.today().date())
-    horizon_weeks = st.sidebar.number_input("Horizon (weeks)", min_value=1, max_value=52, value=6)
-    top_n = st.sidebar.number_input("Show top N SKUs", min_value=10, max_value=5000, value=200)
-
-    # Build list of ISO year/week for the horizon
-    start_dt = pd.Timestamp(start_date)
-    monday = start_dt - pd.to_timedelta(start_dt.weekday(), unit='D')
-    weeks = []
-    for i in range(int(horizon_weeks)):
-        d = monday + pd.to_timedelta(7 * i, unit='D')
-        iso = d.isocalendar()
-        weeks.append((int(iso.year), int(iso.week)))
-    week_idx_list = [y * 100 + w for y, w in weeks]
-
-    # Filter receipts
-    receipts = bdd0.copy()
-    if "YearWeekIdx" in receipts.columns:
-        receipts = receipts[receipts["YearWeekIdx"].isin(week_idx_list)].copy()
-
-    receipts = receipts[receipts["ReceivingPlant"].astype(str) == str(recv)].copy()
-    receipts = receipts[receipts["ShippingPlant"].astype(str) == str(ship)].copy()
-
-    by_sku = (
-        receipts.groupby("SapCode", dropna=True)["ConfirmedPOreceipt"].sum().reset_index()
-        .rename(columns={"ConfirmedPOreceipt": "ConfirmedPOreceipt_Sum"})
-    )
-
-    if by_sku.empty:
-        st.warning("No confirmed PO receipts found for the selected shipping/receiving plants and period.")
-        with st.expander("Debug: filtered receipts preview"):
-            st.dataframe(receipts.head(200), use_container_width=True)
-        return
-
-    # Compute shipping plant PhysicalStock (latest snapshot available)
-    if not {"SapCode", "Warehouse", "PhysicalStock"}.issubset(inv.columns):
-        st.error("Inventory file must contain SapCode, Warehouse/PlantID, and PhysicalStock to compute shipping stock.")
-        with st.expander("Show detected inventory columns"):
-            st.write(sorted(inv.columns.tolist()))
-        return
-
-    stock = inv.copy()
-    stock = stock[stock["Warehouse"].astype(str) == str(ship)].copy()
-    if not stock.empty and "Period" in stock.columns and stock["Period"].notna().any():
-        stock = stock[stock["Period"] == stock["Period"].max()].copy()
-
-    stock_agg = (
-        stock.groupby("SapCode", dropna=True)["PhysicalStock"].sum().reset_index()
-        .rename(columns={"PhysicalStock": "Shipping_PhysicalStock"})
-    ) if not stock.empty else pd.DataFrame({"SapCode": [], "Shipping_PhysicalStock": []})
-
-    # Add description if present
-    desc = pd.DataFrame()
-    if "MaterialDescription" in inv.columns and "SapCode" in inv.columns:
-        tmp = inv.copy()
-        if "Period" in tmp.columns and tmp["Period"].notna().any():
-            tmp = tmp[tmp["Period"] == tmp["Period"].max()].copy()
-        desc = tmp[["SapCode", "MaterialDescription"]].drop_duplicates("SapCode")
-
-    out = by_sku.merge(stock_agg, on="SapCode", how="left")
-    out["Shipping_PhysicalStock"] = out.get("Shipping_PhysicalStock", 0).fillna(0)
-    if not desc.empty:
-        out = out.merge(desc, on="SapCode", how="left")
-
-    out = out.sort_values(["ConfirmedPOreceipt_Sum", "Shipping_PhysicalStock"], ascending=[False, False])
-    out = out.head(int(top_n)).copy()
-
-    st.subheader("📦 SKU ranking for mitigation")
-    st.caption(
-        f"Receiving PlantID: {recv} | Shipping PlantID: {ship} | Weeks: {weeks[0][0]}-W{str(weeks[0][1]).zfill(2)} → {weeks[-1][0]}-W{str(weeks[-1][1]).zfill(2)}"
-    )
-
-    display_cols = [c for c in ["SapCode", "MaterialDescription", "ConfirmedPOreceipt_Sum", "Shipping_PhysicalStock"] if c in out.columns]
-    st.dataframe(out[display_cols], use_container_width=True, height=520)
-
-    d1, d2 = st.columns(2)
-    with d1:
-        st.download_button(
-            "⬇️ Download ranking (CSV)",
-            df_to_csv_bytes(out[display_cols]),
-            "mitigation_sku_ranking.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-    with d2:
-        x = df_to_excel_bytes(out[display_cols], "MitigationRanking")
-        if x:
-            st.download_button(
-                "⬇️ Download ranking (Excel)",
-                x,
-                "mitigation_sku_ranking.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-
-    with st.expander("Show filtered receipts (debug)"):
-        st.dataframe(receipts.head(1000), use_container_width=True)
 
 # NAVIGATION
 # ------------------------------------------------------------
