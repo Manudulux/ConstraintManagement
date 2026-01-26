@@ -19,6 +19,12 @@ st.set_page_config(
 # SHARED HELPERS
 # ------------------------------------------------------------
 def read_csv_robust(upload_or_path):
+    """
+    Robust CSV loader aligned with Mitigation Proposal settings:
+      - low_memory=False to avoid chunked dtype guessing
+      - quoting=csv.QUOTE_NONE to treat content literally
+      - tries common separators and encodings
+    """
     attempts = [
         dict(sep=",", encoding=None),
         dict(sep=";", encoding=None),
@@ -29,12 +35,19 @@ def read_csv_robust(upload_or_path):
         try:
             if hasattr(upload_or_path, "seek"):
                 upload_or_path.seek(0)
-            return pd.read_csv(upload_or_path, **opts)
+            return pd.read_csv(
+                upload_or_path,
+                low_memory=False,
+                quoting=csv.QUOTE_NONE,
+                **opts,
+            )
         except Exception:
+            # try next combo
             pass
+    # Last resort with robust flags as well
     if hasattr(upload_or_path, "seek"):
         upload_or_path.seek(0)
-    return pd.read_csv(upload_or_path)
+    return pd.read_csv(upload_or_path, low_memory=False, quoting=csv.QUOTE_NONE)
 
 def df_to_csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
@@ -763,6 +776,26 @@ def run_planning_overview_bdd400():
     if b3.empty:
         st.info("Please upload 0030BDD400.csv on Home.")
         return
+    # Show source and a hard row count right after the read
+    st.caption(
+        f"📂 BDD0030 source: "
+        f"{st.session_state.get('bdd0030_file_bytes_caption','')}  
+"
+        f"Rows loaded: {len(b3):,}"
+    )
+
+    # Optional: harmonize field cleanup like in Mitigation Proposal
+    if 'PlantID' in b3.columns:
+        b3['PlantID'] = (
+            b3['PlantID'].astype(str).str.strip().str.replace('"', '', regex=False)
+        )
+    for _col in ['ConfirmedPRreceipt', 'Daysofcoverage', 'ClosingStock']:
+        if _col in b3.columns:
+            b3[_col] = pd.to_numeric(
+                b3[_col].astype(str).str.replace('"', '', regex=False),
+                errors='coerce',
+            ).fillna(0)
+
     b3 = _normalize_bdd0030(b3)
 
     # Aggregate if duplicates exist per Warehouse/Year/Week
@@ -864,6 +897,26 @@ def run_storage_capacity():
     if cap.empty:
         st.info("Please upload PlantCapacity.csv on Home.")
         return
+
+    # Show source and a hard row count right after the read
+    st.caption(
+        f"📂 BDD0030 source: "
+        f"{st.session_state.get('bdd0030_file_bytes_caption','')}  
+"
+        f"Rows loaded: {len(b3):,}"
+    )
+
+    # Optional: harmonize field cleanup like in Mitigation Proposal
+    if 'PlantID' in b3.columns:
+        b3['PlantID'] = (
+            b3['PlantID'].astype(str).str.strip().str.replace('"', '', regex=False)
+        )
+    for _col in ['ConfirmedPRreceipt', 'Daysofcoverage', 'ClosingStock']:
+        if _col in b3.columns:
+            b3[_col] = pd.to_numeric(
+                b3[_col].astype(str).str.replace('"', '', regex=False),
+                errors='coerce',
+            ).fillna(0)
 
     b3 = _normalize_bdd0030(b3)
     cap = _normalize_capacity(cap)
